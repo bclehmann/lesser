@@ -1,10 +1,10 @@
 use std::{fs::File, io::{stdout, BufRead, BufReader, Read, Write}, time::Duration};
 use crossterm::{
-    event::{self, poll, read, Event, KeyEventKind}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{ScrollDown, ScrollUp}, ExecutableCommand
+    event::{self, poll, read, Event, KeyEventKind}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{enable_raw_mode, ScrollDown, ScrollUp}, ExecutableCommand
 };
 
 #[cfg(unix)]
-fn get_tty() {
+fn get_tty() -> File {
     File::open("/dev/tty").expect("Could not open /dev/tty")
 }
 
@@ -84,6 +84,11 @@ fn main() -> std::io::Result<()> {
 
     let (_, mut rows) = crossterm::terminal::size().expect("Could not get terminal size");
 
+    #[cfg(unix)]
+    {
+        enable_raw_mode().expect("Could not enter raw mode");
+    }
+    
     loop {
         // read is guaranteed not to block when poll returns Ok(true)
         if poll(Duration::MAX)? {
