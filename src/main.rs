@@ -228,10 +228,56 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
     }
 }
 
+fn get_pos(pos: Option<usize>, n_lines: usize, n_rows: usize, requested_offset: i32) -> Option<usize> {
+    if n_lines < n_rows {
+        return None;
+    }
+
+    if requested_offset == 0 {
+        return pos;
+    } else if requested_offset > 0 {
+        if let Some(mut n) = pos {
+            n += requested_offset as usize;
+
+            if n > n_lines - n_rows {
+                return None;
+            }
+
+            return Some(n);
+        } else {
+            return None;
+        }
+    } else {
+        if let Some(mut n) = pos {
+            if n < -requested_offset as usize {
+                return Some(0);
+            }
+            return Some(n - (-requested_offset as usize));
+        } else {
+            if n_lines < n_rows {
+                return None;
+            } else if n_lines - n_rows < -requested_offset as usize {
+                return Some(0);
+            } else {
+                return Some(n_lines - n_rows - (-requested_offset as usize));
+            }
+        }
+    }
+}
+
+fn page_by(lines: &Vec<String>, pos: &mut Option<usize>, offset: i32) {
+    let (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
+    *pos = get_pos(*pos, lines.len(), rows as usize, offset);
+
+    overwrite_last_n_lines(&lines, *pos, None);
+}
+
 fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Sender<ReaderThreadMessage>, term_rx: mpsc::Receiver<TerminalThreadMessage>, input_tx: mpsc::Sender<InputThreadMessage>) {
     execute!(stdout(), EnterAlternateScreen).unwrap();
     let mut pos: Option<usize> = Some(0);
     let mut last_line_length: i32= -1;
+
+    let pageUpSize = 20;
     
     let (_, mut rows) = crossterm::terminal::size().expect("Could not get terminal size");
     thread::sleep(Duration::from_millis(100)); // i.e. make sure there's some stuff to read on first draw
@@ -261,38 +307,28 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                         crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => {
                             break;
                         }
-                        crossterm::event::KeyCode::Char('u') | crossterm::event::KeyCode::Up => {
+                        crossterm::event::KeyCode::Up => {
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in KeyUp event handler");
-
-                                if let Some(n) = pos {
-                                    if n > 0 {
-                                        pos = Some(n - 1);
-                                    }
-                                } else {
-                                    pos = if lines.len() < rows as usize { Some(0) } else { Some(lines.len() - rows as usize) };
-                                }
-
-                                last_line_length = lines.len() as i32;
-                                overwrite_last_n_lines(&lines, pos, None);
+                                page_by(&lines, &mut pos, -1);
                             }
                         }
-                        crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char(' ') => {
+                        crossterm::event::KeyCode::Char('u') | crossterm::event::KeyCode::PageUp => {
+                            {
+                                let lines = lines_mtx.lock().expect("Could not take lock in KeyUp event handler");
+                                page_by(&lines, &mut pos, -pageUpSize);
+                            }
+                        }
+                        crossterm::event::KeyCode::Down => {
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in KeyDown event handler");
-                                if let Some(n) = pos {
-                                    if lines.len() < rows as usize {
-                                        pos = None;
-                                    }
-                                    else if n < lines.len() - rows as usize {
-                                        pos = Some(n + 1);
-                                    } else {
-                                        pos = None;
-                                    }
-                                }
-    
-                                last_line_length = lines.len() as i32;
-                                overwrite_last_n_lines(&lines, pos, None);
+                                page_by(&lines, &mut pos, 1);
+                            }
+                        }
+                        crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::PageDown | crossterm::event::KeyCode::Char(' ') => {
+                            {
+                                let lines = lines_mtx.lock().expect("Could not take lock in KeyUp event handler");
+                                page_by(&lines, &mut pos, pageUpSize);
                             }
                         }
                         crossterm::event::KeyCode::Enter => {
@@ -353,24 +389,31 @@ fn input_thread_fn(term_tx: mpsc::Sender<TerminalThreadMessage>, input_rx: mpsc:
                 }
             }
         }
-        match read().unwrap() {
-            Event::Key(event) => {
-                match term_tx.send(TerminalThreadMessage::KeyEvent(event)) {
-                    Err(_) => {
-                        break;
+        match poll(Duration::from_millis(100)).unwrap() {
+            true => {
+                match read().unwrap() {
+                    Event::Key(event) => {
+                        match term_tx.send(TerminalThreadMessage::KeyEvent(event)) {
+                            Err(_) => {
+                                break;
+                            }
+                            _ => {}
+                        }
+                    },
+                    Event::Resize(cols, rows) => {
+                        match term_tx.send(TerminalThreadMessage::Resize(cols, rows)) {
+                            Err(_) => {
+                                break;
+                            }
+                            _ => {}
+                        }
                     }
-                    _ => {}
+                    _ => {
+                    }
                 }
             },
-            Event::Resize(cols, rows) => {
-                match term_tx.send(TerminalThreadMessage::Resize(cols, rows)) {
-                    Err(_) => {
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            _ => {
+            false => {
+                continue;
             }
         }
     }
