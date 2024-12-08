@@ -157,6 +157,17 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
                         search.push(c);
                         write_status_message(&format!("Query: {}", search));
                     }
+                    crossterm::event::KeyCode::Backspace => {
+                        if search.len() > 0 {
+                            search.pop();
+                        } else {
+                            return;
+                        }
+                        write_status_message(&format!("Query: {}", search));
+                    }
+                    crossterm::event::KeyCode::Esc => {
+                        return;
+                    }
                     crossterm::event::KeyCode::Enter => {
                         break;
                     }
@@ -277,7 +288,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
     let mut pos: Option<usize> = Some(0);
     let mut last_line_length: i32= -1;
 
-    let pageUpSize = 20;
+    let page_up_size = 20;
     
     let (_, mut rows) = crossterm::terminal::size().expect("Could not get terminal size");
     thread::sleep(Duration::from_millis(100)); // i.e. make sure there's some stuff to read on first draw
@@ -309,26 +320,26 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                         }
                         crossterm::event::KeyCode::Up => {
                             {
-                                let lines = lines_mtx.lock().expect("Could not take lock in KeyUp event handler");
+                                let lines = lines_mtx.lock().expect("Could not take lock in ArrrowUp event handler");
                                 page_by(&lines, &mut pos, -1);
                             }
                         }
                         crossterm::event::KeyCode::Char('u') | crossterm::event::KeyCode::PageUp => {
                             {
-                                let lines = lines_mtx.lock().expect("Could not take lock in KeyUp event handler");
-                                page_by(&lines, &mut pos, -pageUpSize);
+                                let lines = lines_mtx.lock().expect("Could not take lock in PgUp event handler");
+                                page_by(&lines, &mut pos, -page_up_size);
                             }
                         }
                         crossterm::event::KeyCode::Down => {
                             {
-                                let lines = lines_mtx.lock().expect("Could not take lock in KeyDown event handler");
+                                let lines = lines_mtx.lock().expect("Could not take lock in ArrowDown event handler");
                                 page_by(&lines, &mut pos, 1);
                             }
                         }
                         crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::PageDown | crossterm::event::KeyCode::Char(' ') => {
                             {
-                                let lines = lines_mtx.lock().expect("Could not take lock in KeyUp event handler");
-                                page_by(&lines, &mut pos, pageUpSize);
+                                let lines = lines_mtx.lock().expect("Could not take lock in PgDn event handler");
+                                page_by(&lines, &mut pos, page_up_size);
                             }
                         }
                         crossterm::event::KeyCode::Enter => {
