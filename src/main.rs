@@ -76,6 +76,15 @@ fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<
             }
         }
 
+        // This isn't really for Windows, it's for Windows terminal emulators running under WSL
+        // Since we're in raw mode the emulator won't know what to do with LF-style line endings
+        // It's entirely possible that this will break things for normal Unix terminals, so this 
+        // might need revisiting
+        if !line.ends_with("\r\n") {
+            line.pop();
+            line.push_str("\r\n");
+        }
+
         if n == 0 {
             break;
         }
@@ -295,7 +304,5 @@ fn main() {
     thread::scope(|scope| {
         let render_thread = scope.spawn(move|| reader_thread_fn(reader_thread_mtx, rx));
         let term_thread = scope.spawn(move|| term_thread_fn(lines_mtx, tx));
-
-        term_thread.join().expect("Could not join term_thread");
     });
 }
