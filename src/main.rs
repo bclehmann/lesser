@@ -230,17 +230,22 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
 
 fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Sender<ReaderThreadMessage>, term_rx: mpsc::Receiver<TerminalThreadMessage>, input_tx: mpsc::Sender<InputThreadMessage>) {
     execute!(stdout(), EnterAlternateScreen).unwrap();
-    let mut pos: Option<usize> = None;
+    let mut pos: Option<usize> = Some(0);
     let mut last_line_length: i32= -1;
-
+    
+    let (_, mut rows) = crossterm::terminal::size().expect("Could not get terminal size");
+    thread::sleep(Duration::from_millis(100)); // i.e. make sure there's some stuff to read on first draw
     {
         let lines = lines_mtx.lock().expect("Could not take lock in term_thread");
+        if lines.len() < rows as usize { // If there aren't many lines we can start in autoscroll
+            pos = None;
+        }
+
         if lines.len() != last_line_length as usize {
             last_line_length = lines.len() as i32;
             overwrite_last_n_lines(&lines, pos, None);
         }
     }
-    let (_, mut rows) = crossterm::terminal::size().expect("Could not get terminal size");
 
     enable_raw_mode().expect("Could not enter raw mode");
     
@@ -321,6 +326,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                 TerminalThreadMessage::Read => {
                     {
                         let lines = lines_mtx.lock().expect("Could not take lock in read event handler");
+
                         if lines.len() != last_line_length as usize {
                             last_line_length = lines.len() as i32;
                             overwrite_last_n_lines(&lines, pos, None);
