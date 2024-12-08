@@ -1,7 +1,8 @@
-use std::{fs::File, io::{stdout, BufRead, BufReader, Read, Write}, time::Duration};
+use std::{fs::File, io::{stdout, BufRead, BufReader, Read, Write}, sync::{mpsc, Arc, Mutex}, thread, time::Duration};
 use crossterm::{
     event::{self, poll, read, Event, KeyEventKind}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{enable_raw_mode, ScrollDown, ScrollUp}, ExecutableCommand
 };
+use libc::{getchar, EOF};
 
 #[cfg(unix)]
 fn get_tty() -> File {
@@ -61,23 +62,48 @@ fn first_instance_of_term_past(lines: &Vec<String>, search: &str, start: usize) 
     None
 }
 
-fn main() -> std::io::Result<()> {
-    let mut from_end: usize = 0;
-    let mut highlight_line_no: Option<usize> = None;
-
-    let mut reader = BufReader::new(std::io::stdin());
-    let mut lines = Vec::<String>::new();
+fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<ThreadMessage>) {
+    let stdin = std::io::stdin();
+    let mut reader = BufReader::new(stdin);
     let mut line = String::new();
+
     while let Ok(n) = reader.read_line(&mut line) {
+        if let Ok(message) = rx.try_recv() {
+            match message {
+                ThreadMessage::Exit => {
+                    break;
+                }
+            }
+        }
+
         if n == 0 {
             break;
         }
+        {
+            let mut lines: std::sync::MutexGuard<'_, &mut Vec<String>> = lines_mtx.lock().expect("Could not take lock in reader_thread");
+            lines.push(line.clone());
+        }
 
-        lines.push(line.clone());
         line.clear();
     }
+}
 
-    overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+enum ThreadMessage {
+    Exit,
+}
+
+fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<ThreadMessage>) {
+    let mut from_end: usize = 0;
+    let mut highlight_line_no: Option<usize> = None;
+    let mut last_line_length: i32= -1;
+
+    {
+        let lines = lines_mtx.lock().expect("Could not take lock in term_thread");
+        if lines.len() != last_line_length as usize {
+            last_line_length = lines.len() as i32;
+            overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+        }
+    }
 
     let tty = get_tty();
     let mut tty_reader = BufReader::new(tty);
@@ -91,8 +117,8 @@ fn main() -> std::io::Result<()> {
     
     loop {
         // read is guaranteed not to block when poll returns Ok(true)
-        if poll(Duration::MAX)? {
-            match read()? {
+        if poll(Duration::from_millis(100)).unwrap() {
+            match read().unwrap() {
                 Event::Key(event) => {
                     if event.kind != KeyEventKind::Press {
                         continue;
@@ -105,12 +131,17 @@ fn main() -> std::io::Result<()> {
                         crossterm::event::KeyCode::Char('u') | crossterm::event::KeyCode::Up => {
                             from_end += 1;
 
-                            if from_end + rows as usize > lines.len() {
-                                from_end = lines.len() - rows as usize;
-                            }
+                            {
+                                let lines = lines_mtx.lock().expect("Could not take lock in KeyUp event handler");
 
-                            highlight_line_no = None;
-                            overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                                if from_end + rows as usize > lines.len() {
+                                    from_end = lines.len() - rows as usize;
+                                }
+
+                                highlight_line_no = None;
+                                last_line_length = lines.len() as i32;
+                                overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                            }
                         }
                         crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char(' ') |  crossterm::event::KeyCode::Enter => {
                             highlight_line_no = None;
@@ -119,11 +150,16 @@ fn main() -> std::io::Result<()> {
                             }
                             from_end -= 1;
 
-                            if from_end + rows as usize > lines.len() {
-                                from_end = lines.len() - rows as usize;
-                            }
+                            {
+                                let lines = lines_mtx.lock().expect("Could not take lock in KeyDown event handler");
 
-                            overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                                if from_end + rows as usize > lines.len() {
+                                    from_end = lines.len() - rows as usize;
+                                }
+    
+                                last_line_length = lines.len() as i32;
+                                overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                            }
                         }
                         crossterm::event::KeyCode::Char('/') => {
                             highlight_line_no = None;
@@ -131,38 +167,46 @@ fn main() -> std::io::Result<()> {
                             // It's much easier to do this than to do the same thing through crossterm events
                             tty_reader.read_line(&mut search).expect("Could not read search string");
 
-                            let mut search_result = first_instance_of_term_past(&lines, search.trim(), 0);
-                            loop {
-                                match search_result {
-                                    Some(i) => {
-                                        highlight_line_no = Some(i);
-                                        from_end = lines.len() - i - 1;
-                                        overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                            {
+                                // Is it right to hold the lock for this whole time? Or would the user want to see new results as they come in?
+                                let lines= lines_mtx.lock().expect("Could not take lock in search event handler");
+
+                                let mut search_result = first_instance_of_term_past(&lines, search.trim(), 0);
+                                loop {
+                                    match search_result {
+                                        Some(i) => {
+                                            highlight_line_no = Some(i);
+                                            from_end = lines.len() - i - 1;
+                                            last_line_length = lines.len() as i32;
+                                            overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                                        }
+                                        None => {
+                                            highlight_line_no = None;
+                                            last_line_length = lines.len() as i32;
+                                            overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                                            break;
+                                        }
                                     }
-                                    None => {
-                                        highlight_line_no = None;
-                                        overwrite_last_n_lines(&lines, from_end, highlight_line_no);
-                                        break;
-                                    }
-                                }
-                                match(read()?) {
-                                    Event::Key(event) => {
-                                        if event.kind != KeyEventKind::Press {
+                                    match read().unwrap() {
+                                        Event::Key(event) => {
+                                            if event.kind != KeyEventKind::Press {
+                                                continue;
+                                            }
+                                            match event.code {
+                                                crossterm::event::KeyCode::Enter => {
+                                                    search_result = first_instance_of_term_past(&lines, search.trim(), highlight_line_no.unwrap() + 1);
+                                                }
+                                                _ => {
+                                                    highlight_line_no = None;
+                                                    last_line_length = lines.len() as i32;
+                                                    overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                                                    break;
+                                                },
+                                            }
+                                        },
+                                        _ => {
                                             continue;
                                         }
-                                        match event.code {
-                                            crossterm::event::KeyCode::Enter => {
-                                                search_result = first_instance_of_term_past(&lines, search.trim(), highlight_line_no.unwrap() + 1);
-                                            }
-                                            _ => {
-                                                highlight_line_no = None;
-                                                overwrite_last_n_lines(&lines, from_end, highlight_line_no);
-                                                break;
-                                            },
-                                        }
-                                    },
-                                    _ => {
-                                        continue;
                                     }
                                 }
                             }
@@ -172,14 +216,38 @@ fn main() -> std::io::Result<()> {
                 },
                 Event::Resize(_, n) => {
                     rows = n;
-                    overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                    {
+                        let lines = lines_mtx.lock().expect("Could not take lock in resize event handler");
+                        last_line_length = lines.len() as i32;
+                        overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                    }
                 }
                 _ => {}
             }
         } else {
-            // Timeout expired and no `Event` is available
+            {
+                let lines = lines_mtx.lock().expect("Could not take lock in resize event handler");
+                if lines.len() != last_line_length as usize {
+                    last_line_length = lines.len() as i32;
+                    overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                }
+            }
         }
     }
+    let _ = tx.send(ThreadMessage::Exit); // If it's not received that's ok, that probably means the reader thread has already exited
+}
 
-    Ok(())
+fn main() {
+    let mut lines_raw = Vec::<String>::new();
+    let lines_mtx = Arc::new(Mutex::new(&mut lines_raw));
+    let reader_thread_mtx = Arc::clone(&lines_mtx);
+
+    let (tx, rx) = mpsc::channel::<ThreadMessage>();
+
+    thread::scope(|scope| {
+        let render_thread = scope.spawn(move|| reader_thread_fn(reader_thread_mtx, rx));
+        let term_thread = scope.spawn(move|| term_thread_fn(lines_mtx, tx));
+
+        term_thread.join().expect("Could not join term_thread");
+    });
 }
