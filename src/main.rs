@@ -37,7 +37,7 @@ fn overwrite_last_n_lines(lines: &Vec<String>, from_end: usize, highlight_line_n
             Some(j) if i == j => {
                 queue!(
                     output,
-                    SetBackgroundColor(Color::White),
+                    SetBackgroundColor(Color::Cyan),
                     SetForegroundColor(Color::Black),
                     Print(lines[i].clone()),
                     ResetColor
@@ -158,6 +158,13 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                         crossterm::event::KeyCode::Char('/') => {
                             highlight_line_no = None;
                             let mut search = String::new();
+                            execute!(
+                                stdout(),
+                                SetBackgroundColor(Color::Grey),
+                                SetForegroundColor(Color::Black),
+                                Print("Query: "),
+                                ResetColor
+                            ).unwrap();
                             loop {
                                 match read().unwrap() {
                                     Event::Key(event) => {
@@ -167,6 +174,13 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                                         match event.code {
                                             crossterm::event::KeyCode::Char(c) => {
                                                 search.push(c);
+                                                execute!(
+                                                    stdout(),
+                                                    SetBackgroundColor(Color::Grey),
+                                                    SetForegroundColor(Color::Black),
+                                                    Print(c),
+                                                    ResetColor
+                                                ).unwrap();
                                             }
                                             crossterm::event::KeyCode::Enter => {
                                                 break;
@@ -201,6 +215,13 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                                             break;
                                         }
                                     }
+                                    execute!(
+                                        stdout(),
+                                        SetBackgroundColor(Color::Grey),
+                                        SetForegroundColor(Color::Black),
+                                        Print("Press Enter for next occurrence, any other key to exit search mode"),
+                                        ResetColor,
+                                    ).unwrap();
                                     match read().unwrap() {
                                         Event::Key(event) => {
                                             if event.kind != KeyEventKind::Press {
