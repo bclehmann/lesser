@@ -1,6 +1,6 @@
-use std::{fs::File, io::{stdout, BufRead, BufReader, Read, Write}, sync::{mpsc, Arc, Mutex}, thread, time::Duration};
+use std::{fs::File, io::{stdout, BufRead, BufReader, Write}, sync::{mpsc, Arc, Mutex}, thread, time::Duration};
 use crossterm::{
-    event::{self, poll, read, Event, KeyEventKind}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, ScrollDown, ScrollUp}, ExecutableCommand
+    event::{poll, read, Event, KeyEventKind}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen}
 };
 
 #[cfg(unix)]
@@ -49,7 +49,7 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
         }
     }
 
-    output.flush();
+    output.flush().expect("Could not flush output");
 }
 
 fn first_instance_of_term_past(lines: &Vec<String>, search: &str, start: usize) -> Option<usize> {
@@ -302,7 +302,7 @@ fn main() {
     let (tx, rx) = mpsc::channel::<ThreadMessage>();
 
     thread::scope(|scope| {
-        let render_thread = scope.spawn(move|| reader_thread_fn(reader_thread_mtx, rx));
-        let term_thread = scope.spawn(move|| term_thread_fn(lines_mtx, tx));
+        scope.spawn(move|| reader_thread_fn(reader_thread_mtx, rx));
+        scope.spawn(move|| term_thread_fn(lines_mtx, tx));
     });
 }
