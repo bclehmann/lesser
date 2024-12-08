@@ -20,9 +20,13 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
 
     queue!(output, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), MoveTo(0, 0)).unwrap();
 
-    let start = if let Some(n) = pos {
+    let start: usize = if let Some(n) = pos {
         if n + rows as usize > lines.len() {
-            lines.len() - rows as usize + 2
+            if lines.len() < rows as usize {
+                0
+            } else {
+                lines.len() - rows as usize + 2
+            }
         } else {
             n
         }
@@ -69,7 +73,7 @@ fn get_matches(lines: &Vec<String>, search: &str) -> Vec<usize> {
     matches
 }
 
-fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<ThreadMessage>) {
+fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<ReaderThreadMessage>, term_tx: mpsc::Sender<TerminalThreadMessage>) {
     let stdin = std::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();
@@ -77,7 +81,7 @@ fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<
     while let Ok(n) = reader.read_line(&mut line) {
         if let Ok(message) = rx.try_recv() {
             match message {
-                ThreadMessage::Exit => {
+                ReaderThreadMessage::Exit => {
                     break;
                 }
             }
@@ -101,10 +105,21 @@ fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<
         }
 
         line.clear();
+        term_tx.send(TerminalThreadMessage::Read).expect("Could not send message to terminal thread");
     }
 }
 
-enum ThreadMessage {
+enum ReaderThreadMessage {
+    Exit,
+}
+
+enum TerminalThreadMessage {
+    KeyEvent(crossterm::event::KeyEvent),
+    Resize(u16, u16),
+    Read
+}
+
+enum InputThreadMessage {
     Exit,
 }
 
@@ -122,13 +137,14 @@ fn write_status_message(message: &str) {
     ).unwrap();
 }
 
-fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<String>>>) {
+// Note, search mode ignores many of the events from term_rx. It has special permission to do so.
+fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<String>>>, term_rx: &mpsc::Receiver<TerminalThreadMessage>) {
     let mut highlight_line_no = None;
     let mut search = String::new();
     write_status_message("Query: ");
     loop {
-        match read().unwrap() {
-            Event::Key(event) => {
+        match term_rx.recv() {
+            Ok(TerminalThreadMessage::KeyEvent(event)) => {
                 if event.kind != KeyEventKind::Press {
                     continue;
                 }
@@ -166,8 +182,8 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
             write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
 
             loop {
-                match read().unwrap() {
-                    Event::Key(event) => {
+                match term_rx.recv() {
+                    Ok(TerminalThreadMessage::KeyEvent(event)) => {
                         if event.kind != KeyEventKind::Press {
                             continue;
                         }
@@ -208,7 +224,7 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
     }
 }
 
-fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<ThreadMessage>) {
+fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Sender<ReaderThreadMessage>, term_rx: mpsc::Receiver<TerminalThreadMessage>, input_tx: mpsc::Sender<InputThreadMessage>) {
     execute!(stdout(), EnterAlternateScreen).unwrap();
     let mut pos: Option<usize> = None;
     let mut last_line_length: i32= -1;
@@ -225,10 +241,9 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
     enable_raw_mode().expect("Could not enter raw mode");
     
     loop {
-        // read is guaranteed not to block when poll returns Ok(true)
-        if poll(Duration::from_millis(100)).unwrap() {
-            match read().unwrap() {
-                Event::Key(event) => {
+        if let Ok(message) = term_rx.recv() {
+            match message {
+                TerminalThreadMessage::KeyEvent(event) => {
                     if event.kind != KeyEventKind::Press {
                         continue;
                     }
@@ -246,7 +261,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                                         pos = Some(n - 1);
                                     }
                                 } else {
-                                    pos = Some(lines.len() - rows as usize);
+                                    pos = if lines.len() < rows as usize { Some(0) } else { Some(lines.len() - rows as usize) };
                                 }
 
                                 last_line_length = lines.len() as i32;
@@ -257,7 +272,10 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in KeyDown event handler");
                                 if let Some(n) = pos {
-                                    if n < lines.len() - rows as usize {
+                                    if lines.len() < rows as usize {
+                                        pos = None;
+                                    }
+                                    else if n < lines.len() - rows as usize {
                                         pos = Some(n + 1);
                                     } else {
                                         pos = None;
@@ -277,12 +295,18 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                             }
                         }
                         crossterm::event::KeyCode::Char('/') => {
-                            handle_search_mode(&mut pos, &lines_mtx);
+                            handle_search_mode(&mut pos, &lines_mtx, &term_rx);
+                            (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
+                            {
+                                let lines = lines_mtx.lock().expect("Could not take lock in search event handler");
+                                last_line_length = lines.len() as i32;
+                                overwrite_last_n_lines(&lines, pos, None);
+                            }
                         }
                         _ => {}
                     }
                 },
-                Event::Resize(_, n) => {
+                TerminalThreadMessage::Resize(_, n) => {
                     rows = n;
                     {
                         let lines = lines_mtx.lock().expect("Could not take lock in resize event handler");
@@ -290,14 +314,14 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                         overwrite_last_n_lines(&lines, pos, None);
                     }
                 }
-                _ => {}
-            }
-        } else {
-            {
-                let lines = lines_mtx.lock().expect("Could not take lock in resize event handler");
-                if lines.len() != last_line_length as usize {
-                    last_line_length = lines.len() as i32;
-                    overwrite_last_n_lines(&lines, pos, None);
+                TerminalThreadMessage::Read => {
+                    {
+                        let lines = lines_mtx.lock().expect("Could not take lock in read event handler");
+                        if lines.len() != last_line_length as usize {
+                            last_line_length = lines.len() as i32;
+                            overwrite_last_n_lines(&lines, pos, None);
+                        }
+                    }
                 }
             }
         }
@@ -306,7 +330,40 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
     execute!(stdout(), LeaveAlternateScreen).unwrap();
     disable_raw_mode().expect("Could not exit raw mode");
 
-    let _ = tx.send(ThreadMessage::Exit); // If it's not received that's ok, that probably means the reader thread has already exited
+    let _ = reader_tx.send(ReaderThreadMessage::Exit); // If it's not received that's ok, that probably means the thread has already exited
+    let _ = input_tx.send(InputThreadMessage::Exit); // If it's not received that's ok, that probably means the thread has already exited
+}
+
+fn input_thread_fn(term_tx: mpsc::Sender<TerminalThreadMessage>, input_rx: mpsc::Receiver<InputThreadMessage>) {
+    loop {
+        if let Ok(message) = input_rx.try_recv() {
+            match message {
+                InputThreadMessage::Exit => {
+                    break;
+                }
+            }
+        }
+        match read().unwrap() {
+            Event::Key(event) => {
+                match term_tx.send(TerminalThreadMessage::KeyEvent(event)) {
+                    Err(_) => {
+                        break;
+                    }
+                    _ => {}
+                }
+            },
+            Event::Resize(cols, rows) => {
+                match term_tx.send(TerminalThreadMessage::Resize(cols, rows)) {
+                    Err(_) => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {
+            }
+        }
+    }
 }
 
 fn main() {
@@ -314,10 +371,14 @@ fn main() {
     let lines_mtx = Arc::new(Mutex::new(&mut lines_raw));
     let reader_thread_mtx = Arc::clone(&lines_mtx);
 
-    let (tx, rx) = mpsc::channel::<ThreadMessage>();
+    let (reader_tx, reader_rx) = mpsc::channel::<ReaderThreadMessage>();
+    let (term_tx, term_rx) = mpsc::channel::<TerminalThreadMessage>();
+    let (input_tx, input_rx) = mpsc::channel::<InputThreadMessage>();
 
+    let term_tx2 = term_tx.clone();
     thread::scope(|scope| {
-        scope.spawn(move|| reader_thread_fn(reader_thread_mtx, rx));
-        scope.spawn(move|| term_thread_fn(lines_mtx, tx));
+        scope.spawn(move|| reader_thread_fn(reader_thread_mtx, reader_rx, term_tx));
+        scope.spawn(move|| term_thread_fn(lines_mtx, reader_tx, term_rx, input_tx));
+        scope.spawn(move|| input_thread_fn(term_tx2, input_rx));
     });
 }
