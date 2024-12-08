@@ -2,7 +2,6 @@ use std::{fs::File, io::{stdout, BufRead, BufReader, Read, Write}, sync::{mpsc, 
 use crossterm::{
     event::{self, poll, read, Event, KeyEventKind}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, ScrollDown, ScrollUp}, ExecutableCommand
 };
-use libc::{getchar, EOF};
 
 #[cfg(unix)]
 fn get_tty() -> File {
@@ -15,17 +14,18 @@ fn get_tty() -> File {
     File::open("CON").expect("Could not open CON")
 }
 
-fn overwrite_last_n_lines(lines: &Vec<String>, from_end: usize, highlight_line_no: Option<usize>) {
+fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_line_no: Option<usize>) {
     let (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
     let mut output = stdout();
 
     queue!(output, crossterm::terminal::Clear(crossterm::terminal::ClearType::All)).unwrap();
 
-    let offset = from_end + rows as usize;
-    let start = if offset > lines.len() {
-        0
-    } else {
-        lines.len() - offset
+    let start = if let Some(n) = pos { n } else { 
+        if lines.len() < rows as usize {
+            0
+        } else {
+            lines.len() - rows as usize
+        }
     };
 
     for i in start..(start + rows as usize) {
@@ -94,7 +94,7 @@ enum ThreadMessage {
 
 fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<ThreadMessage>) {
     execute!(stdout(), EnterAlternateScreen).unwrap();
-    let mut from_end: usize = 0;
+    let mut pos: Option<usize> = None;
     let mut highlight_line_no: Option<usize> = None;
     let mut last_line_length: i32= -1;
 
@@ -102,7 +102,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
         let lines = lines_mtx.lock().expect("Could not take lock in term_thread");
         if lines.len() != last_line_length as usize {
             last_line_length = lines.len() as i32;
-            overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+            overwrite_last_n_lines(&lines, pos, highlight_line_no);
         }
     }
     let (_, mut rows) = crossterm::terminal::size().expect("Could not get terminal size");
@@ -123,36 +123,45 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                             break;
                         }
                         crossterm::event::KeyCode::Char('u') | crossterm::event::KeyCode::Up => {
-                            from_end += 1;
-
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in KeyUp event handler");
 
-                                if from_end + rows as usize > lines.len() {
-                                    from_end = lines.len() - rows as usize;
+                                if let Some(n) = pos {
+                                    if n > 0 {
+                                        pos = Some(n - 1);
+                                    }
+                                } else {
+                                    pos = Some(lines.len() - rows as usize - 1);
                                 }
 
                                 highlight_line_no = None;
                                 last_line_length = lines.len() as i32;
-                                overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                                overwrite_last_n_lines(&lines, pos, highlight_line_no);
                             }
                         }
-                        crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char(' ') |  crossterm::event::KeyCode::Enter => {
+                        crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char(' ') => {
                             highlight_line_no = None;
-                            if from_end == 0 {
-                                continue;
-                            }
-                            from_end -= 1;
 
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in KeyDown event handler");
-
-                                if from_end + rows as usize > lines.len() {
-                                    from_end = lines.len() - rows as usize;
+                                if let Some(n) = pos {
+                                    if n < lines.len() - rows as usize {
+                                        pos = Some(n + 1);
+                                    } else {
+                                        pos = None;
+                                    }
                                 }
     
                                 last_line_length = lines.len() as i32;
-                                overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                                overwrite_last_n_lines(&lines, pos, highlight_line_no);
+                            }
+                        }
+                        crossterm::event::KeyCode::Enter => {
+                            pos = None;
+                            {
+                                let lines = lines_mtx.lock().expect("Could not take lock in Enter event handler");
+                                last_line_length = lines.len() as i32;
+                                overwrite_last_n_lines(&lines, pos, highlight_line_no);
                             }
                         }
                         crossterm::event::KeyCode::Char('/') => {
@@ -204,14 +213,14 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                                     match search_result {
                                         Some(i) => {
                                             highlight_line_no = Some(i);
-                                            from_end = lines.len() - i - 1;
+                                            pos = Some(i - 1);
                                             last_line_length = lines.len() as i32;
-                                            overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                                            overwrite_last_n_lines(&lines, pos, highlight_line_no);
                                         }
                                         None => {
                                             highlight_line_no = None;
                                             last_line_length = lines.len() as i32;
-                                            overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                                            overwrite_last_n_lines(&lines, pos, highlight_line_no);
                                             break;
                                         }
                                     }
@@ -234,7 +243,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                                                 _ => {
                                                     highlight_line_no = None;
                                                     last_line_length = lines.len() as i32;
-                                                    overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                                                    overwrite_last_n_lines(&lines, pos, highlight_line_no);
                                                     break;
                                                 },
                                             }
@@ -254,7 +263,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                     {
                         let lines = lines_mtx.lock().expect("Could not take lock in resize event handler");
                         last_line_length = lines.len() as i32;
-                        overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                        overwrite_last_n_lines(&lines, pos, highlight_line_no);
                     }
                 }
                 _ => {}
@@ -264,14 +273,14 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                 let lines = lines_mtx.lock().expect("Could not take lock in resize event handler");
                 if lines.len() != last_line_length as usize {
                     last_line_length = lines.len() as i32;
-                    overwrite_last_n_lines(&lines, from_end, highlight_line_no);
+                    overwrite_last_n_lines(&lines, pos, highlight_line_no);
                 }
             }
         }
     }
 
-    disable_raw_mode().expect("Could not exit raw mode");
     execute!(stdout(), LeaveAlternateScreen).unwrap();
+    disable_raw_mode().expect("Could not exit raw mode");
 
     let _ = tx.send(ThreadMessage::Exit); // If it's not received that's ok, that probably means the reader thread has already exited
 }
