@@ -63,9 +63,13 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
 }
 
 fn get_matches(lines: &Vec<String>, search: &str) -> Vec<usize> {
+    let search_as_lower = search.to_lowercase();
     let mut matches = Vec::<usize>::new();
+
     for (i, line) in lines.iter().enumerate() {
-        if line.contains(search) {
+        let as_lower = line.to_lowercase();
+        
+        if as_lower.contains(&search_as_lower) {
             matches.push(i);
         }
     }
