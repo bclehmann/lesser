@@ -18,6 +18,8 @@ This is a basic terminal pager that has support for searching. I made this becau
 - Enter search mode: `/`
    - Next/prev occurrences with arrow keys
    - Exit search mode: Escape
+- Go to line: `g`
+    - Enter line number and press `Enter`, or press 'g' again to go to start
 
 ## Code
 
@@ -28,4 +30,3 @@ I wrote this in an afternoon and I haven't really cleaned up the code since I go
 - Support opening files, rather than just using STDIN. This could probably address the Powershell issue above
 - Regex search
 - Rewriting the whole screen on every change is probably not ideal from a performance perspective. But I don't yet know if it'll be a big problem
-

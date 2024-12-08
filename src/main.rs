@@ -1,6 +1,6 @@
 use std::{fs::File, io::{stdout, BufRead, BufReader, Write}, sync::{mpsc, Arc, Mutex}, thread, time::Duration};
 use crossterm::{
-    cursor::{MoveTo, MoveUp}, event::{poll, read, Event, KeyEventKind}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen}
+    cursor::{MoveTo, MoveUp}, event::{poll, read, Event, KeyEventKind, KeyModifiers}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen}
 };
 
 #[cfg(unix)]
@@ -239,6 +239,62 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
     }
 }
 
+fn handle_go_to_line(pos: Option<usize>, n_lines: usize, term_rx: &mpsc::Receiver<TerminalThreadMessage>) -> Option<usize> {
+    write_status_message("Go to line: ");
+    let mut line_no = String::new();
+    loop {
+        match term_rx.recv() {
+            Ok(TerminalThreadMessage::KeyEvent(event)) => {
+                if event.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match event.code {
+                    crossterm::event::KeyCode::Char(c) if c.is_numeric() => {
+                        line_no.push(c);
+                        write_status_message(&format!("Go to line: {}", line_no));
+                    }
+                    crossterm::event::KeyCode::Char('g') | crossterm::event::KeyCode::Char('G') => {
+                        return Some(0);
+                    }
+                    crossterm::event::KeyCode::Backspace => {
+                        if line_no.len() > 0 {
+                            line_no.pop();
+                        } else {
+                            return pos;
+                        }
+                        write_status_message(&format!("Go to line: {}", line_no));
+                    }
+                    crossterm::event::KeyCode::Esc => {
+                        return pos;
+                    }
+                    crossterm::event::KeyCode::Enter => {
+                        break;
+                    }
+                    _ => {
+                    }
+                }
+            },
+            _ => {
+                continue;
+            }
+        }
+    }
+
+    let line_no = line_no.trim();
+    if line_no.len() == 0 {
+        return pos;
+    }
+
+    let line_no = line_no.parse::<usize>().expect("Could not parse line number");
+    return if line_no > n_lines {
+        None
+    } else if line_no == 0 {
+        Some(0)
+    } else {
+        Some(line_no - 1)
+    };
+}
+
 fn get_pos(pos: Option<usize>, n_lines: usize, n_rows: usize, requested_offset: i32) -> Option<usize> {
     if n_lines < n_rows {
         return None;
@@ -315,7 +371,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                     }
 
                     match event.code {
-                        crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => {
+                        crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Char('Q') | crossterm::event::KeyCode::Esc => {
                             break;
                         }
                         crossterm::event::KeyCode::Up => {
@@ -324,7 +380,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                                 page_by(&lines, &mut pos, -1);
                             }
                         }
-                        crossterm::event::KeyCode::Char('u') | crossterm::event::KeyCode::PageUp => {
+                        crossterm::event::KeyCode::Char('u') | crossterm::event::KeyCode::Char('U') | crossterm::event::KeyCode::PageUp => {
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in PgUp event handler");
                                 page_by(&lines, &mut pos, -page_up_size);
@@ -336,7 +392,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                                 page_by(&lines, &mut pos, 1);
                             }
                         }
-                        crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::PageDown | crossterm::event::KeyCode::Char(' ') => {
+                        crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::Char('D') | crossterm::event::KeyCode::PageDown | crossterm::event::KeyCode::Char(' ') => {
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in PgDn event handler");
                                 page_by(&lines, &mut pos, page_up_size);
@@ -347,6 +403,17 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in Enter event handler");
                                 last_line_length = lines.len() as i32;
+                                overwrite_last_n_lines(&lines, pos, None);
+                            }
+                        }
+                        crossterm::event::KeyCode::Char('g') | crossterm::event::KeyCode::Char('G') => {
+                            {
+                                let lines = lines_mtx.lock().expect("Could not take lock in goto line event handler");
+                                if event.modifiers.contains(KeyModifiers::SHIFT) {
+                                    pos = None;
+                                } else {
+                                    pos = handle_go_to_line(pos, lines.len(), &term_rx);
+                                }
                                 overwrite_last_n_lines(&lines, pos, None);
                             }
                         }
