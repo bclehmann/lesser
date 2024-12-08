@@ -1,6 +1,6 @@
 use std::{fs::File, io::{stdout, BufRead, BufReader, Read, Write}, sync::{mpsc, Arc, Mutex}, thread, time::Duration};
 use crossterm::{
-    event::{self, poll, read, Event, KeyEventKind}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{enable_raw_mode, ScrollDown, ScrollUp}, ExecutableCommand
+    event::{self, poll, read, Event, KeyEventKind}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, ScrollDown, ScrollUp}, ExecutableCommand
 };
 use libc::{getchar, EOF};
 
@@ -93,6 +93,7 @@ enum ThreadMessage {
 }
 
 fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<ThreadMessage>) {
+    execute!(stdout(), EnterAlternateScreen).unwrap();
     let mut from_end: usize = 0;
     let mut highlight_line_no: Option<usize> = None;
     let mut last_line_length: i32= -1;
@@ -107,7 +108,6 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
 
     let tty = get_tty();
     let mut tty_reader = BufReader::new(tty);
-
     let (_, mut rows) = crossterm::terminal::size().expect("Could not get terminal size");
 
     #[cfg(unix)]
@@ -234,6 +234,14 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
             }
         }
     }
+
+    #[cfg(unix)]
+    {
+        disable_raw_mode().expect("Could not exit raw mode");
+    }
+
+    execute!(stdout(), LeaveAlternateScreen).unwrap();
+
     let _ = tx.send(ThreadMessage::Exit); // If it's not received that's ok, that probably means the reader thread has already exited
 }
 
