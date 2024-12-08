@@ -12,8 +12,8 @@ This is a basic terminal pager that has support for searching. I made this becau
 ## Controls
 
 - Quit: `q`, `ESC`
-- Line up: `u`, Up arrow
-- Line down: `d`, Down arrow, space
+- Line up/down: arrow keys
+- Page up/down: `u` and `d` or `PgUp` and `PgDn`
 - Go to end: `Enter`
 - Enter search mode: `/`
    - Next/prev occurrences with arrow keys
@@ -25,7 +25,6 @@ I wrote this in an afternoon and I haven't really cleaned up the code since I go
 
 ## Features I'd like to add
 
-- Paging one line at a time is a little slow, this should probably support PgUp/PgDn
 - Support opening files, rather than just using STDIN. This could probably address the Powershell issue above
 - Regex search
 - Rewriting the whole screen on every change is probably not ideal from a performance perspective. But I don't yet know if it'll be a big problem
