@@ -105,15 +105,9 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
             overwrite_last_n_lines(&lines, from_end, highlight_line_no);
         }
     }
-
-    let tty = get_tty();
-    let mut tty_reader = BufReader::new(tty);
     let (_, mut rows) = crossterm::terminal::size().expect("Could not get terminal size");
 
-    #[cfg(unix)]
-    {
-        enable_raw_mode().expect("Could not enter raw mode");
-    }
+    enable_raw_mode().expect("Could not enter raw mode");
     
     loop {
         // read is guaranteed not to block when poll returns Ok(true)
@@ -164,8 +158,28 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                         crossterm::event::KeyCode::Char('/') => {
                             highlight_line_no = None;
                             let mut search = String::new();
-                            // It's much easier to do this than to do the same thing through crossterm events
-                            tty_reader.read_line(&mut search).expect("Could not read search string");
+                            loop {
+                                match read().unwrap() {
+                                    Event::Key(event) => {
+                                        if event.kind != KeyEventKind::Press {
+                                            continue;
+                                        }
+                                        match event.code {
+                                            crossterm::event::KeyCode::Char(c) => {
+                                                search.push(c);
+                                            }
+                                            crossterm::event::KeyCode::Enter => {
+                                                break;
+                                            }
+                                            _ => {
+                                            }
+                                        }
+                                    },
+                                    _ => {
+                                        continue;
+                                    }
+                                }
+                            }
 
                             {
                                 // Is it right to hold the lock for this whole time? Or would the user want to see new results as they come in?
@@ -235,11 +249,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
         }
     }
 
-    #[cfg(unix)]
-    {
-        disable_raw_mode().expect("Could not exit raw mode");
-    }
-
+    disable_raw_mode().expect("Could not exit raw mode");
     execute!(stdout(), LeaveAlternateScreen).unwrap();
 
     let _ = tx.send(ThreadMessage::Exit); // If it's not received that's ok, that probably means the reader thread has already exited
