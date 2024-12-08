@@ -346,9 +346,9 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
 
     let page_up_size = 20;
     
-    let (_, mut rows) = crossterm::terminal::size().expect("Could not get terminal size");
     thread::sleep(Duration::from_millis(100)); // i.e. make sure there's some stuff to read on first draw
     {
+        let (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
         let lines = lines_mtx.lock().expect("Could not take lock in term_thread");
         if lines.len() < rows as usize { // If there aren't many lines we can start in autoscroll
             pos = None;
@@ -419,7 +419,6 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                         }
                         crossterm::event::KeyCode::Char('/') => {
                             handle_search_mode(&mut pos, &lines_mtx, &term_rx);
-                            (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in search event handler");
                                 last_line_length = lines.len() as i32;
@@ -429,13 +428,8 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                         _ => {}
                     }
                 },
-                TerminalThreadMessage::Resize(_, n) => {
-                    rows = n;
-                    {
-                        let lines = lines_mtx.lock().expect("Could not take lock in resize event handler");
-                        last_line_length = lines.len() as i32;
-                        overwrite_last_n_lines(&lines, pos, None);
-                    }
+                TerminalThreadMessage::Resize(_, _) => {
+
                 }
                 TerminalThreadMessage::Read => {
                     {
