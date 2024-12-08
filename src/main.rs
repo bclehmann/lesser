@@ -68,7 +68,7 @@ fn get_matches(lines: &Vec<String>, search: &str) -> Vec<usize> {
 
     for (i, line) in lines.iter().enumerate() {
         let as_lower = line.to_lowercase();
-        
+
         if as_lower.contains(&search_as_lower) {
             matches.push(i);
         }
@@ -197,7 +197,7 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
                                 overwrite_last_n_lines(&lines, *pos, highlight_line_no);
                                 break;
                             }
-                            crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Enter => {
+                            crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Right | crossterm::event::KeyCode::Enter => {
                                 match_no = (match_no + 1) % matches.len();
 
                                 *pos = Some(matches[match_no]);
@@ -206,7 +206,7 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
 
                                 write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
                             }
-                            crossterm::event::KeyCode::Char('p') | crossterm::event::KeyCode::Up => {
+                            crossterm::event::KeyCode::Char('p') | crossterm::event::KeyCode::Up |  crossterm::event::KeyCode::Left => {
                                 match_no = if match_no > 0 { match_no - 1 } else { matches.len() - 1 };
 
                                 *pos = Some(matches[match_no]);
