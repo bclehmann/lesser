@@ -22,7 +22,7 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
 
     let start = if let Some(n) = pos {
         if n + rows as usize > lines.len() {
-            lines.len() - rows as usize
+            lines.len() - rows as usize + 2
         } else {
             n
         }
@@ -30,7 +30,7 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
         if lines.len() < rows as usize {
             0
         } else {
-            lines.len() - rows as usize
+            lines.len() - rows as usize + 2
         }
     };
 
@@ -122,17 +122,102 @@ fn write_status_message(message: &str) {
     ).unwrap();
 }
 
+fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<String>>>) {
+    let mut highlight_line_no = None;
+    let mut search = String::new();
+    write_status_message("Query: ");
+    loop {
+        match read().unwrap() {
+            Event::Key(event) => {
+                if event.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match event.code {
+                    crossterm::event::KeyCode::Char(c) => {
+                        search.push(c);
+                        write_status_message(&format!("Query: {}", search));
+                    }
+                    crossterm::event::KeyCode::Enter => {
+                        break;
+                    }
+                    _ => {
+                    }
+                }
+            },
+            _ => {
+                continue;
+            }
+        }
+    }
+
+    {
+        // Is it right to hold the lock for this whole time? Or would the user want to see new results as they come in?
+        let lines= lines_mtx.lock().expect("Could not take lock in search event handler");
+
+        let matches = get_matches(&lines, search.trim());
+        if matches.len() == 0 {
+            write_status_message("No matches found");
+        } else {
+            *pos = Some(matches[0]);
+            highlight_line_no = Some(matches[0]);
+            overwrite_last_n_lines(&lines, *pos, highlight_line_no);
+
+            let mut match_no = 0;
+            write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
+
+            loop {
+                match read().unwrap() {
+                    Event::Key(event) => {
+                        if event.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        match event.code {
+                            crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('q') => {
+                                highlight_line_no = None;
+                                overwrite_last_n_lines(&lines, *pos, highlight_line_no);
+                                break;
+                            }
+                            crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Enter => {
+                                match_no = (match_no + 1) % matches.len();
+
+                                *pos = Some(matches[match_no]);
+                                highlight_line_no = Some(matches[match_no]);
+                                overwrite_last_n_lines(&lines, *pos, highlight_line_no);
+
+                                write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
+                            }
+                            crossterm::event::KeyCode::Char('p') | crossterm::event::KeyCode::Up => {
+                                match_no = if match_no > 0 { match_no - 1 } else { matches.len() - 1 };
+
+                                *pos = Some(matches[match_no]);
+                                highlight_line_no = Some(matches[match_no]);
+                                overwrite_last_n_lines(&lines, *pos, highlight_line_no);
+
+                                write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
+                            }
+                            _ => {
+                            }
+                        }
+                    },
+                    _ => {
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<ThreadMessage>) {
     execute!(stdout(), EnterAlternateScreen).unwrap();
     let mut pos: Option<usize> = None;
-    let mut highlight_line_no: Option<usize> = None;
     let mut last_line_length: i32= -1;
 
     {
         let lines = lines_mtx.lock().expect("Could not take lock in term_thread");
         if lines.len() != last_line_length as usize {
             last_line_length = lines.len() as i32;
-            overwrite_last_n_lines(&lines, pos, highlight_line_no);
+            overwrite_last_n_lines(&lines, pos, None);
         }
     }
     let (_, mut rows) = crossterm::terminal::size().expect("Could not get terminal size");
@@ -161,17 +246,14 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                                         pos = Some(n - 1);
                                     }
                                 } else {
-                                    pos = Some(lines.len() - rows as usize - 1);
+                                    pos = Some(lines.len() - rows as usize);
                                 }
 
-                                highlight_line_no = None;
                                 last_line_length = lines.len() as i32;
-                                overwrite_last_n_lines(&lines, pos, highlight_line_no);
+                                overwrite_last_n_lines(&lines, pos, None);
                             }
                         }
                         crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char(' ') => {
-                            highlight_line_no = None;
-
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in KeyDown event handler");
                                 if let Some(n) = pos {
@@ -183,7 +265,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                                 }
     
                                 last_line_length = lines.len() as i32;
-                                overwrite_last_n_lines(&lines, pos, highlight_line_no);
+                                overwrite_last_n_lines(&lines, pos, None);
                             }
                         }
                         crossterm::event::KeyCode::Enter => {
@@ -191,96 +273,11 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in Enter event handler");
                                 last_line_length = lines.len() as i32;
-                                overwrite_last_n_lines(&lines, pos, highlight_line_no);
+                                overwrite_last_n_lines(&lines, pos, None);
                             }
                         }
                         crossterm::event::KeyCode::Char('/') => {
-                            highlight_line_no = None;
-                            let mut search = String::new();
-                            write_status_message("Query: ");
-                            loop {
-                                match read().unwrap() {
-                                    Event::Key(event) => {
-                                        if event.kind != KeyEventKind::Press {
-                                            continue;
-                                        }
-                                        match event.code {
-                                            crossterm::event::KeyCode::Char(c) => {
-                                                search.push(c);
-                                                write_status_message(&format!("Query: {}", search));
-                                            }
-                                            crossterm::event::KeyCode::Enter => {
-                                                break;
-                                            }
-                                            _ => {
-                                            }
-                                        }
-                                    },
-                                    _ => {
-                                        continue;
-                                    }
-                                }
-                            }
-
-                            {
-                                // Is it right to hold the lock for this whole time? Or would the user want to see new results as they come in?
-                                let lines= lines_mtx.lock().expect("Could not take lock in search event handler");
-
-                                let matches = get_matches(&lines, search.trim());
-                                if matches.len() == 0 {
-                                    write_status_message("No matches found");
-                                } else {
-                                    pos = Some(matches[0]);
-                                    highlight_line_no = Some(matches[0]);
-                                    last_line_length = lines.len() as i32;
-                                    overwrite_last_n_lines(&lines, pos, highlight_line_no);
-
-                                    let mut match_no = 0;
-                                    write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
-
-                                    loop {
-                                        match read().unwrap() {
-                                            Event::Key(event) => {
-                                                if event.kind != KeyEventKind::Press {
-                                                    continue;
-                                                }
-                                                match event.code {
-                                                    crossterm::event::KeyCode::Enter | crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('q') => {
-                                                        highlight_line_no = None;
-                                                        overwrite_last_n_lines(&lines, pos, highlight_line_no);
-                                                        break;
-                                                    }
-                                                    crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Down => {
-                                                        match_no = (match_no + 1) % matches.len();
-
-                                                        pos = Some(matches[match_no]);
-                                                        highlight_line_no = Some(matches[match_no]);
-                                                        last_line_length = lines.len() as i32;
-                                                        overwrite_last_n_lines(&lines, pos, highlight_line_no);
-
-                                                        write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
-                                                    }
-                                                    crossterm::event::KeyCode::Char('p') | crossterm::event::KeyCode::Up => {
-                                                        match_no = if match_no > 0 { match_no - 1 } else { matches.len() - 1 };
-
-                                                        pos = Some(matches[match_no]);
-                                                        highlight_line_no = Some(matches[match_no]);
-                                                        last_line_length = lines.len() as i32;
-                                                        overwrite_last_n_lines(&lines, pos, highlight_line_no);
-
-                                                        write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
-                                                    }
-                                                    _ => {
-                                                    }
-                                                }
-                                            },
-                                            _ => {
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            handle_search_mode(&mut pos, &lines_mtx);
                         }
                         _ => {}
                     }
@@ -290,7 +287,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                     {
                         let lines = lines_mtx.lock().expect("Could not take lock in resize event handler");
                         last_line_length = lines.len() as i32;
-                        overwrite_last_n_lines(&lines, pos, highlight_line_no);
+                        overwrite_last_n_lines(&lines, pos, None);
                     }
                 }
                 _ => {}
@@ -300,7 +297,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                 let lines = lines_mtx.lock().expect("Could not take lock in resize event handler");
                 if lines.len() != last_line_length as usize {
                     last_line_length = lines.len() as i32;
-                    overwrite_last_n_lines(&lines, pos, highlight_line_no);
+                    overwrite_last_n_lines(&lines, pos, None);
                 }
             }
         }
