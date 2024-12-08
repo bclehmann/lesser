@@ -1,6 +1,6 @@
 use std::{fs::File, io::{stdout, BufRead, BufReader, Write}, sync::{mpsc, Arc, Mutex}, thread, time::Duration};
 use crossterm::{
-    event::{poll, read, Event, KeyEventKind}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen}
+    cursor::{MoveTo, MoveUp}, event::{poll, read, Event, KeyEventKind}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen}
 };
 
 #[cfg(unix)]
@@ -18,9 +18,15 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
     let (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
     let mut output = stdout();
 
-    queue!(output, crossterm::terminal::Clear(crossterm::terminal::ClearType::All)).unwrap();
+    queue!(output, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), MoveTo(0, 0)).unwrap();
 
-    let start = if let Some(n) = pos { n } else { 
+    let start = if let Some(n) = pos {
+        if n + rows as usize > lines.len() {
+            lines.len() - rows as usize
+        } else {
+            n
+        }
+    } else { 
         if lines.len() < rows as usize {
             0
         } else {
@@ -28,7 +34,7 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
         }
     };
 
-    for i in start..(start + rows as usize) {
+    for i in start..(start + rows as usize - 1) {
         if i >= lines.len() {
             break;
         }
@@ -52,14 +58,15 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
     output.flush().expect("Could not flush output");
 }
 
-fn first_instance_of_term_past(lines: &Vec<String>, search: &str, start: usize) -> Option<usize> {
-    for (i, line) in lines.iter().skip(start).enumerate() {
+fn get_matches(lines: &Vec<String>, search: &str) -> Vec<usize> {
+    let mut matches = Vec::<usize>::new();
+    for (i, line) in lines.iter().enumerate() {
         if line.contains(search) {
-            return Some(i + start);
+            matches.push(i);
         }
     }
 
-    None
+    matches
 }
 
 fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<ThreadMessage>) {
@@ -99,6 +106,20 @@ fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<
 
 enum ThreadMessage {
     Exit,
+}
+
+fn write_status_message(message: &str) {
+    let (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
+
+    execute!(
+        stdout(),
+        SetBackgroundColor(Color::Grey),
+        SetForegroundColor(Color::Black),
+        MoveTo(0, rows - 1),
+        Clear(ClearType::CurrentLine),
+        Print(message),
+        ResetColor
+    ).unwrap();
 }
 
 fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<ThreadMessage>) {
@@ -176,13 +197,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                         crossterm::event::KeyCode::Char('/') => {
                             highlight_line_no = None;
                             let mut search = String::new();
-                            execute!(
-                                stdout(),
-                                SetBackgroundColor(Color::Grey),
-                                SetForegroundColor(Color::Black),
-                                Print("Query: "),
-                                ResetColor
-                            ).unwrap();
+                            write_status_message("Query: ");
                             loop {
                                 match read().unwrap() {
                                     Event::Key(event) => {
@@ -192,13 +207,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                                         match event.code {
                                             crossterm::event::KeyCode::Char(c) => {
                                                 search.push(c);
-                                                execute!(
-                                                    stdout(),
-                                                    SetBackgroundColor(Color::Grey),
-                                                    SetForegroundColor(Color::Black),
-                                                    Print(c),
-                                                    ResetColor
-                                                ).unwrap();
+                                                write_status_message(&format!("Query: {}", search));
                                             }
                                             crossterm::event::KeyCode::Enter => {
                                                 break;
@@ -217,48 +226,57 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, tx: mpsc::Sender<Thre
                                 // Is it right to hold the lock for this whole time? Or would the user want to see new results as they come in?
                                 let lines= lines_mtx.lock().expect("Could not take lock in search event handler");
 
-                                let mut search_result = first_instance_of_term_past(&lines, search.trim(), 0);
-                                loop {
-                                    match search_result {
-                                        Some(i) => {
-                                            highlight_line_no = Some(i);
-                                            pos = Some(i - 1);
-                                            last_line_length = lines.len() as i32;
-                                            overwrite_last_n_lines(&lines, pos, highlight_line_no);
-                                        }
-                                        None => {
-                                            highlight_line_no = None;
-                                            last_line_length = lines.len() as i32;
-                                            overwrite_last_n_lines(&lines, pos, highlight_line_no);
-                                            break;
-                                        }
-                                    }
-                                    execute!(
-                                        stdout(),
-                                        SetBackgroundColor(Color::Grey),
-                                        SetForegroundColor(Color::Black),
-                                        Print("Press Enter for next occurrence, any other key to exit search mode"),
-                                        ResetColor,
-                                    ).unwrap();
-                                    match read().unwrap() {
-                                        Event::Key(event) => {
-                                            if event.kind != KeyEventKind::Press {
+                                let matches = get_matches(&lines, search.trim());
+                                if matches.len() == 0 {
+                                    write_status_message("No matches found");
+                                } else {
+                                    pos = Some(matches[0]);
+                                    highlight_line_no = Some(matches[0]);
+                                    last_line_length = lines.len() as i32;
+                                    overwrite_last_n_lines(&lines, pos, highlight_line_no);
+
+                                    let mut match_no = 0;
+                                    write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
+
+                                    loop {
+                                        match read().unwrap() {
+                                            Event::Key(event) => {
+                                                if event.kind != KeyEventKind::Press {
+                                                    continue;
+                                                }
+                                                match event.code {
+                                                    crossterm::event::KeyCode::Enter | crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('q') => {
+                                                        highlight_line_no = None;
+                                                        overwrite_last_n_lines(&lines, pos, highlight_line_no);
+                                                        break;
+                                                    }
+                                                    crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Down => {
+                                                        match_no = (match_no + 1) % matches.len();
+
+                                                        pos = Some(matches[match_no]);
+                                                        highlight_line_no = Some(matches[match_no]);
+                                                        last_line_length = lines.len() as i32;
+                                                        overwrite_last_n_lines(&lines, pos, highlight_line_no);
+
+                                                        write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
+                                                    }
+                                                    crossterm::event::KeyCode::Char('p') | crossterm::event::KeyCode::Up => {
+                                                        match_no = if match_no > 0 { match_no - 1 } else { matches.len() - 1 };
+
+                                                        pos = Some(matches[match_no]);
+                                                        highlight_line_no = Some(matches[match_no]);
+                                                        last_line_length = lines.len() as i32;
+                                                        overwrite_last_n_lines(&lines, pos, highlight_line_no);
+
+                                                        write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
+                                                    }
+                                                    _ => {
+                                                    }
+                                                }
+                                            },
+                                            _ => {
                                                 continue;
                                             }
-                                            match event.code {
-                                                crossterm::event::KeyCode::Enter => {
-                                                    search_result = first_instance_of_term_past(&lines, search.trim(), highlight_line_no.unwrap() + 1);
-                                                }
-                                                _ => {
-                                                    highlight_line_no = None;
-                                                    last_line_length = lines.len() as i32;
-                                                    overwrite_last_n_lines(&lines, pos, highlight_line_no);
-                                                    break;
-                                                },
-                                            }
-                                        },
-                                        _ => {
-                                            continue;
                                         }
                                     }
                                 }
