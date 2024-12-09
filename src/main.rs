@@ -62,15 +62,23 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
     output.flush().expect("Could not flush output");
 }
 
-fn get_matches(lines: &Vec<String>, search: &str) -> Vec<usize> {
+fn get_matches(lines: &Vec<String>, search: &str, is_regex: bool) -> Vec<usize> {
     let search_as_lower = search.to_lowercase();
     let mut matches = Vec::<usize>::new();
 
     for (i, line) in lines.iter().enumerate() {
         let as_lower = line.to_lowercase();
 
-        if as_lower.contains(&search_as_lower) {
-            matches.push(i);
+        if is_regex {
+            if let Ok(re) = regex::Regex::new(search) {
+                if re.is_match(line) {
+                    matches.push(i);
+                }
+            }
+        } else {
+            if as_lower.contains(&search_as_lower) {
+                matches.push(i);
+            }
         }
     }
 
@@ -142,10 +150,12 @@ fn write_status_message(message: &str) {
 }
 
 // Note, search mode ignores many of the events from term_rx. It has special permission to do so.
-fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<String>>>, term_rx: &mpsc::Receiver<TerminalThreadMessage>, page_up_size: usize) {
+fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<String>>>, term_rx: &mpsc::Receiver<TerminalThreadMessage>, page_up_size: usize, match_regex: bool) {
     let mut highlight_line_no = None;
     let mut search = String::new();
-    write_status_message("Query: ");
+
+    let prompt = if match_regex { "Regex" } else { "Search" };
+    write_status_message(&format!("{}: ", prompt));
     loop {
         match term_rx.recv() {
             Ok(TerminalThreadMessage::KeyEvent(event)) => {
@@ -155,7 +165,7 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
                 match event.code {
                     crossterm::event::KeyCode::Char(c) => {
                         search.push(c);
-                        write_status_message(&format!("Query: {}", search));
+                        write_status_message(&format!("{}: {}", prompt, search));
                     }
                     crossterm::event::KeyCode::Backspace => {
                         if search.len() > 0 {
@@ -163,7 +173,7 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
                         } else {
                             return;
                         }
-                        write_status_message(&format!("Query: {}", search));
+                        write_status_message(&format!("{}: {}", prompt, search));
                     }
                     crossterm::event::KeyCode::Esc => {
                         return;
@@ -185,7 +195,7 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
         // Is it right to hold the lock for this whole time? Or would the user want to see new results as they come in?
         let lines= lines_mtx.lock().expect("Could not take lock in search event handler");
 
-        let matches = get_matches(&lines, search.trim());
+        let matches = get_matches(&lines, search.trim(), match_regex);
         if matches.len() == 0 {
             write_status_message("No matches found");
         } else {
@@ -433,7 +443,16 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                             }
                         }
                         crossterm::event::KeyCode::Char('/') => {
-                            handle_search_mode(&mut pos, &lines_mtx, &term_rx, page_up_size);
+                            handle_search_mode(&mut pos, &lines_mtx, &term_rx, page_up_size, false);
+                            pos = pos_with_in_view(pos, page_up_size);
+                            {
+                                let lines = lines_mtx.lock().expect("Could not take lock in search event handler");
+                                last_line_length = lines.len() as i32;
+                                overwrite_last_n_lines(&lines, pos, None);
+                            }
+                        }
+                        crossterm::event::KeyCode::Char('r') | crossterm::event::KeyCode::Char('R') => {
+                            handle_search_mode(&mut pos, &lines_mtx, &term_rx, page_up_size, true);
                             pos = pos_with_in_view(pos, page_up_size);
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in search event handler");
