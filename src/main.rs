@@ -14,13 +14,13 @@ fn get_tty() -> File {
     File::open("CON").expect("Could not open CON")
 }
 
-fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_line_no: Option<usize>) {
-    let (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
+fn overwrite_last_n_lines(lines: &Vec<String>, pos: &mut Option<usize>, highlight_line_no: Option<usize>) {
+    let (cols, rows) = crossterm::terminal::size().expect("Could not get terminal size");
     let mut output = stdout();
 
     queue!(output, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), MoveTo(0, 0)).unwrap();
 
-    let start: usize = if let Some(n) = pos {
+    let mut start: usize = if let Some(n) = *pos {
         if n + rows as usize > lines.len() {
             if lines.len() < rows as usize {
                 0
@@ -38,10 +38,34 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
         }
     };
 
+    if let Some(h) = highlight_line_no {
+        if h <= start {
+            start = h;
+            let mut prelude_rows = 0;
+            while prelude_rows < 5 {
+                if start == 0 {
+                    break;
+                }
+                start -= 1;
+                prelude_rows += lines[start].len() / (cols as usize) + 1;
+            }
+
+            if prelude_rows > 10 {
+                start += 1;
+            }
+
+            *pos = Some(start);
+        }
+    }
+
+    let mut cumulative_rows = 0;
+
     for i in start..(start + rows as usize - 1) {
-        if i >= lines.len() {
+        if i >= lines.len() || cumulative_rows >= rows as usize - 1{
             break;
         }
+
+        cumulative_rows += lines[i].len() / (cols as usize) + 1;
 
         match highlight_line_no {
             Some(j) if i == j => {
@@ -199,9 +223,9 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
         if matches.len() == 0 {
             write_status_message("No matches found");
         } else {
-            *pos = pos_with_in_view(Some(matches[0]), page_up_size);
+            *pos = Some(matches[0]);
             highlight_line_no = Some(matches[0]);
-            overwrite_last_n_lines(&lines, *pos, highlight_line_no);
+            overwrite_last_n_lines(&lines, pos, highlight_line_no);
 
             let mut match_no = 0;
             write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
@@ -215,24 +239,24 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
                         match event.code {
                             crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('q') => {
                                 highlight_line_no = None;
-                                overwrite_last_n_lines(&lines, *pos, highlight_line_no);
+                                overwrite_last_n_lines(&lines, pos, highlight_line_no);
                                 break;
                             }
                             crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Right | crossterm::event::KeyCode::Enter => {
                                 match_no = (match_no + 1) % matches.len();
 
-                                *pos = pos_with_in_view(Some(matches[match_no]), page_up_size);
+                                *pos = Some(matches[match_no]);
                                 highlight_line_no = Some(matches[match_no]);
-                                overwrite_last_n_lines(&lines, *pos, highlight_line_no);
+                                overwrite_last_n_lines(&lines, pos, highlight_line_no);
 
                                 write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
                             }
                             crossterm::event::KeyCode::Char('p') | crossterm::event::KeyCode::Up |  crossterm::event::KeyCode::Left => {
                                 match_no = if match_no > 0 { match_no - 1 } else { matches.len() - 1 };
 
-                                *pos = pos_with_in_view(Some(matches[match_no]), page_up_size);
+                                *pos = Some(matches[match_no]);
                                 highlight_line_no = Some(matches[match_no]);
-                                overwrite_last_n_lines(&lines, *pos, highlight_line_no);
+                                overwrite_last_n_lines(&lines, pos, highlight_line_no);
 
                                 write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
                             }
@@ -305,18 +329,6 @@ fn handle_go_to_line(pos: Option<usize>, n_lines: usize, term_rx: &mpsc::Receive
     };
 }
 
-fn pos_with_in_view(pos: Option<usize>, page_up_size: usize) -> Option<usize> {
-    return if let Some(n) = pos { 
-        if n >= page_up_size {
-            Some(n - page_up_size)
-        } else {
-            Some(0)
-        }
-    } else {
-        pos
-    };
-}
-
 fn get_pos(pos: Option<usize>, n_lines: usize, n_rows: usize, requested_offset: i32) -> Option<usize> {
     if n_lines < n_rows {
         return None;
@@ -358,7 +370,7 @@ fn page_by(lines: &Vec<String>, pos: &mut Option<usize>, offset: i32) {
     let (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
     *pos = get_pos(*pos, lines.len(), rows as usize, offset);
 
-    overwrite_last_n_lines(&lines, *pos, None);
+    overwrite_last_n_lines(&lines, pos, None);
 }
 
 fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Sender<ReaderThreadMessage>, term_rx: mpsc::Receiver<TerminalThreadMessage>, input_tx: mpsc::Sender<InputThreadMessage>) {
@@ -378,7 +390,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
 
         if lines.len() != last_line_length as usize {
             last_line_length = lines.len() as i32;
-            overwrite_last_n_lines(&lines, pos, None);
+            overwrite_last_n_lines(&lines, &mut pos, None);
         }
     }
 
@@ -425,7 +437,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in Enter event handler");
                                 last_line_length = lines.len() as i32;
-                                overwrite_last_n_lines(&lines, pos, None);
+                                overwrite_last_n_lines(&lines, &mut pos, None);
                             }
                         }
                         crossterm::event::KeyCode::Char('g') | crossterm::event::KeyCode::Char('G') => {
@@ -435,29 +447,26 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                                 if event.modifiers.contains(KeyModifiers::SHIFT) {
                                     pos = None;
                                 } else {
-                                    let line_no: Option<usize> = handle_go_to_line(pos, lines.len(), &term_rx);
-                                    highlight_line_no = line_no;
-                                    pos = pos_with_in_view(line_no, page_up_size);
+                                    pos = handle_go_to_line(pos, lines.len(), &term_rx);
+                                    highlight_line_no = pos;
                                 }
-                                overwrite_last_n_lines(&lines, pos, highlight_line_no);
+                                overwrite_last_n_lines(&lines, &mut pos, highlight_line_no);
                             }
                         }
                         crossterm::event::KeyCode::Char('/') => {
                             handle_search_mode(&mut pos, &lines_mtx, &term_rx, page_up_size, false);
-                            pos = pos_with_in_view(pos, page_up_size);
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in search event handler");
                                 last_line_length = lines.len() as i32;
-                                overwrite_last_n_lines(&lines, pos, None);
+                                overwrite_last_n_lines(&lines, &mut pos, None);
                             }
                         }
                         crossterm::event::KeyCode::Char('r') | crossterm::event::KeyCode::Char('R') => {
                             handle_search_mode(&mut pos, &lines_mtx, &term_rx, page_up_size, true);
-                            pos = pos_with_in_view(pos, page_up_size);
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in search event handler");
                                 last_line_length = lines.len() as i32;
-                                overwrite_last_n_lines(&lines, pos, None);
+                                overwrite_last_n_lines(&lines, &mut pos, None);
                             }
                         }
                         _ => {}
@@ -472,7 +481,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
 
                         if lines.len() != last_line_length as usize {
                             last_line_length = lines.len() as i32;
-                            overwrite_last_n_lines(&lines, pos, None);
+                            overwrite_last_n_lines(&lines, &mut pos, None);
                         }
                     }
                 }
