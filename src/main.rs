@@ -14,6 +14,18 @@ fn get_tty() -> File {
     File::open("CON").expect("Could not open CON")
 }
 
+fn get_row_count(lines: &[String], cols: usize) -> usize {
+    let mut count = 0;
+    for line in lines {
+        count += get_line_row_count(line, cols);
+    }
+    count
+}
+
+fn get_line_row_count(line: &String, cols: usize) -> usize {
+    (line.len() - 2) / cols + 1
+}
+
 fn overwrite_last_n_lines(lines: &Vec<String>, pos: &mut Option<usize>, highlight_line_no: Option<usize>) {
     let (cols, rows) = crossterm::terminal::size().expect("Could not get terminal size");
     let mut output = stdout();
@@ -34,7 +46,12 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: &mut Option<usize>, highligh
         if lines.len() < rows as usize {
             0
         } else {
-            lines.len() - rows as usize + 2
+            let mut n = lines.len() - rows as usize - 2;
+            while get_row_count(&lines[n..], cols as usize) > rows as usize - 2
+            {
+                n += 1;
+            }
+            n
         }
     };
 
@@ -47,7 +64,7 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: &mut Option<usize>, highligh
                     break;
                 }
                 start -= 1;
-                prelude_rows += lines[start].len() / (cols as usize) + 1;
+                prelude_rows += get_line_row_count(&lines[start], cols as usize);
             }
 
             if prelude_rows > 10 {
@@ -61,11 +78,11 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: &mut Option<usize>, highligh
     let mut cumulative_rows = 0;
 
     for i in start..(start + rows as usize - 1) {
-        if i >= lines.len() || cumulative_rows >= rows as usize - 1{
+        if i >= lines.len() || cumulative_rows >= rows as usize {
             break;
         }
 
-        cumulative_rows += lines[i].len() / (cols as usize) + 1;
+        cumulative_rows += get_line_row_count(&lines[i], cols as usize);
 
         match highlight_line_no {
             Some(j) if i == j => {
@@ -349,7 +366,7 @@ fn get_pos(pos: Option<usize>, n_lines: usize, n_rows: usize, requested_offset: 
             return None;
         }
     } else {
-        if let Some(mut n) = pos {
+        if let Some(n) = pos {
             if n < -requested_offset as usize {
                 return Some(0);
             }
@@ -367,8 +384,8 @@ fn get_pos(pos: Option<usize>, n_lines: usize, n_rows: usize, requested_offset: 
 }
 
 fn page_by(lines: &Vec<String>, pos: &mut Option<usize>, offset: i32) {
-    let (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
-    *pos = get_pos(*pos, lines.len(), rows as usize, offset);
+    let (cols, rows) = crossterm::terminal::size().expect("Could not get terminal size");
+    *pos = get_pos(*pos, get_row_count(lines, cols as usize), rows as usize, offset);
 
     overwrite_last_n_lines(&lines, pos, None);
 }
@@ -447,7 +464,8 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                                 if event.modifiers.contains(KeyModifiers::SHIFT) {
                                     pos = None;
                                 } else {
-                                    pos = handle_go_to_line(pos, lines.len(), &term_rx);
+                                    let (cols, _) = crossterm::terminal::size().expect("Could not get terminal size");
+                                    pos = handle_go_to_line(pos, get_row_count(&lines, cols as usize), &term_rx);
                                     highlight_line_no = pos;
                                 }
                                 overwrite_last_n_lines(&lines, &mut pos, highlight_line_no);
