@@ -385,7 +385,24 @@ fn get_pos(pos: Option<usize>, n_lines: usize, n_rows: usize, requested_offset: 
 
 fn page_by(lines: &Vec<String>, pos: &mut Option<usize>, offset: i32) {
     let (cols, rows) = crossterm::terminal::size().expect("Could not get terminal size");
-    *pos = get_pos(*pos, get_row_count(lines, cols as usize), rows as usize, offset);
+    let mut offset_in_rows = offset;
+    if let Some(n) = *pos {
+        offset_in_rows = if offset > 0 { 
+            let index = std::cmp::min(n + offset as usize, lines.len() - 1);
+            get_row_count(&lines[n..index], cols as usize) as i32
+        } else { 
+            let index = std::cmp::max(n as i32 + offset, 0) as usize;
+            -(get_row_count(&lines[index..n], cols as usize) as i32)
+        };
+    } else {
+        offset_in_rows = if offset > 0 {
+            offset
+        } else {
+            let index = std::cmp::max(lines.len() as i32 - 1 + offset, 0) as usize;
+            -(get_row_count(&lines[index..lines.len() - 1], cols as usize) as i32)
+        };
+    }
+    *pos = get_pos(*pos, lines.len(), rows as usize, offset_in_rows);
 
     overwrite_last_n_lines(&lines, pos, None);
 }
