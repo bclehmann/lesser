@@ -398,8 +398,6 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
     execute!(stdout(), EnterAlternateScreen).unwrap();
     execute!(stdout(), DisableLineWrap).unwrap();
     let mut pos: Option<usize> = Some(0);
-    let mut last_line_length: i32= -1;
-
 
     thread::sleep(Duration::from_millis(100)); // i.e. make sure there's some stuff to read on first draw
     {
@@ -407,11 +405,6 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
         let lines = lines_mtx.lock().expect("Could not take lock in term_thread");
         if lines.len() < rows as usize { // If there aren't many lines we can start in autoscroll
             pos = None;
-        }
-
-        if lines.len() != last_line_length as usize {
-            last_line_length = lines.len() as i32;
-            overwrite_last_n_lines(&lines, pos, None);
         }
     }
 
@@ -457,7 +450,6 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                             pos = None;
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in Enter event handler");
-                                last_line_length = lines.len() as i32;
                                 overwrite_last_n_lines(&lines, pos, None);
                             }
                         }
@@ -477,21 +469,9 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                         }
                         crossterm::event::KeyCode::Char('/') => {
                             handle_search_mode(&mut pos, &lines_mtx, &term_rx, PAGE_UP_SIZE, false);
-                            pos = pos_with_in_view(pos, PAGE_UP_SIZE);
-                            {
-                                let lines = lines_mtx.lock().expect("Could not take lock in search event handler");
-                                last_line_length = lines.len() as i32;
-                                overwrite_last_n_lines(&lines, pos, None);
-                            }
                         }
                         crossterm::event::KeyCode::Char('r') | crossterm::event::KeyCode::Char('R') => {
                             handle_search_mode(&mut pos, &lines_mtx, &term_rx, PAGE_UP_SIZE, true);
-                            pos = pos_with_in_view(pos, PAGE_UP_SIZE);
-                            {
-                                let lines = lines_mtx.lock().expect("Could not take lock in search event handler");
-                                last_line_length = lines.len() as i32;
-                                overwrite_last_n_lines(&lines, pos, None);
-                            }
                         }
                         _ => {}
                     }
@@ -501,14 +481,8 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                     overwrite_last_n_lines(&lines, pos, None);
                 }
                 TerminalThreadMessage::Read => {
-                    if pos.is_none() {
-                        let lines = lines_mtx.lock().expect("Could not take lock in read event handler");
-
-                        if lines.len() != last_line_length as usize {
-                            last_line_length = lines.len() as i32;
-                            overwrite_last_n_lines(&lines, pos, None);
-                        }
-                    }
+                    let lines = lines_mtx.lock().expect("Could not take lock in read event handler");
+                    overwrite_last_n_lines(&lines, pos, None);
                 }
             }
         }
