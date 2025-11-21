@@ -466,7 +466,8 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                     }
                 },
                 TerminalThreadMessage::Resize(_, _) => {
-
+                    let lines = lines_mtx.lock().expect("Could not take lock in resize event handler");
+                    overwrite_last_n_lines(&lines, pos, None);
                 }
                 TerminalThreadMessage::Read => {
                     {
