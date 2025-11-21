@@ -48,23 +48,13 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
 
     queue!(output, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), MoveTo(0, 0)).unwrap();
 
-    let start: usize = if let Some(n) = pos {
-        if n + rows as usize > lines.len() {
-            if lines.len() < rows as usize {
-                0
-            } else {
-                lines.len() - rows as usize + 2
-            }
-        } else {
-            n
-        }
-    } else {
+    let start = pos.unwrap_or(
         if lines.len() < rows as usize {
             0
         } else {
             lines.len() - rows as usize + 2
         }
-    };
+    );
 
     let mut displayed_lines = 0;
     for i in start..(start + rows as usize - 1) {
@@ -348,7 +338,7 @@ fn pos_with_in_view(pos: Option<usize>, page_up_size: usize) -> Option<usize> {
 
 fn get_pos(pos: Option<usize>, n_lines: usize, n_rows: usize, requested_offset: i32) -> Option<usize> {
     if requested_offset == 0 {
-        return pos;
+        pos
     } else if requested_offset > 0 {
         if let Some(mut n) = pos {
             n += requested_offset as usize;
@@ -357,23 +347,23 @@ fn get_pos(pos: Option<usize>, n_lines: usize, n_rows: usize, requested_offset: 
                 return None;
             }
 
-            return Some(n);
+            Some(n)
         } else {
-            return None;
+            None
         }
     } else {
-        if let Some(mut n) = pos {
+        if let Some(n) = pos {
             if n < -requested_offset as usize {
                 return Some(0);
             }
-            return Some(n - (-requested_offset as usize));
+            Some(n - (-requested_offset as usize))
         } else {
             if n_lines < n_rows {
-                return Some(0);
+                Some(0)
             } else if n_lines - n_rows < -requested_offset as usize {
-                return Some(0);
+                Some(0)
             } else {
-                return Some(n_lines - n_rows - (-requested_offset as usize));
+                Some(n_lines - n_rows - (-requested_offset as usize))
             }
         }
     }
