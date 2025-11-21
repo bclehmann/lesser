@@ -15,6 +15,8 @@ fn get_tty() -> File {
     File::open("CON").expect("Could not open CON")
 }
 
+const PAGE_UP_SIZE: usize = 10;
+
 fn print_line(line: &str, highlight: bool) {
     let mut output = stdout();
     if highlight {
@@ -48,7 +50,7 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
 
     queue!(output, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), MoveTo(0, 0)).unwrap();
 
-    let start = pos.unwrap_or(
+    let mut start = pos.unwrap_or(
         if lines.len() < rows as usize {
             0
         } else {
@@ -382,8 +384,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
     let mut pos: Option<usize> = Some(0);
     let mut last_line_length: i32= -1;
 
-    let page_up_size: usize = 10;
-    
+
     thread::sleep(Duration::from_millis(100)); // i.e. make sure there's some stuff to read on first draw
     {
         let (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
@@ -421,7 +422,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                         crossterm::event::KeyCode::Char('u') | crossterm::event::KeyCode::Char('U') | crossterm::event::KeyCode::PageUp => {
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in PgUp event handler");
-                                page_by(&lines, &mut pos, -(page_up_size as i32));
+                                page_by(&lines, &mut pos, -(PAGE_UP_SIZE as i32));
                             }
                         }
                         crossterm::event::KeyCode::Down => {
@@ -433,7 +434,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                         crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::Char('D') | crossterm::event::KeyCode::PageDown | crossterm::event::KeyCode::Char(' ') => {
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in PgDn event handler");
-                                page_by(&lines, &mut pos, page_up_size as i32);
+                                page_by(&lines, &mut pos, PAGE_UP_SIZE as i32);
                             }
                         }
                         crossterm::event::KeyCode::Enter => {
@@ -453,14 +454,14 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                                 } else {
                                     let line_no: Option<usize> = handle_go_to_line(pos, lines.len(), &term_rx);
                                     highlight_line_no = line_no;
-                                    pos = pos_with_in_view(line_no, page_up_size);
+                                    pos = pos_with_in_view(line_no, PAGE_UP_SIZE);
                                 }
                                 overwrite_last_n_lines(&lines, pos, highlight_line_no);
                             }
                         }
                         crossterm::event::KeyCode::Char('/') => {
-                            handle_search_mode(&mut pos, &lines_mtx, &term_rx, page_up_size, false);
-                            pos = pos_with_in_view(pos, page_up_size);
+                            handle_search_mode(&mut pos, &lines_mtx, &term_rx, PAGE_UP_SIZE, false);
+                            pos = pos_with_in_view(pos, PAGE_UP_SIZE);
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in search event handler");
                                 last_line_length = lines.len() as i32;
@@ -468,8 +469,8 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                             }
                         }
                         crossterm::event::KeyCode::Char('r') | crossterm::event::KeyCode::Char('R') => {
-                            handle_search_mode(&mut pos, &lines_mtx, &term_rx, page_up_size, true);
-                            pos = pos_with_in_view(pos, page_up_size);
+                            handle_search_mode(&mut pos, &lines_mtx, &term_rx, PAGE_UP_SIZE, true);
+                            pos = pos_with_in_view(pos, PAGE_UP_SIZE);
                             {
                                 let lines = lines_mtx.lock().expect("Could not take lock in search event handler");
                                 last_line_length = lines.len() as i32;
