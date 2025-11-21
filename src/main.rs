@@ -91,8 +91,6 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
         }
     }
 
-    write_status_message(format!("Cols: {}, Rows: {}, Lines: {}, Pos: {:?} displayed_lines: {}", cols, rows, lines.len(), pos, displayed_lines).as_str());
-
     output.flush().expect("Could not flush output");
 }
 
