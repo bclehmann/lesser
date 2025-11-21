@@ -7,7 +7,7 @@ use crossterm::{
 };
 use crossterm::terminal::DisableLineWrap;
 use clap::Parser;
-use notify::{RecursiveMode, Result, Watcher};
+use notify::{RecursiveMode, Watcher};
 
 #[cfg(unix)]
 fn get_tty() -> File {
@@ -186,8 +186,26 @@ fn write_status_message(message: &str) {
     ).unwrap();
 }
 
+fn jump_to_match(lines: &Vec<String>, matches: &Vec<usize>, pos: &mut Option<usize>, page_up_size: usize, search: &str, match_regex: bool, match_no: usize) -> Result<(), ()> {
+    let mut highlight_line_no = None;
+
+    if match_no < matches.len() {
+        *pos = pos_with_in_view(Some(matches[match_no]), page_up_size);
+        highlight_line_no = Some(matches[match_no]);
+        overwrite_last_n_lines(&lines, *pos, highlight_line_no);
+
+        write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
 // Note, search mode ignores many of the events from term_rx. It has special permission to do so.
 fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<String>>>, term_rx: &mpsc::Receiver<TerminalThreadMessage>, page_up_size: usize, match_regex: bool) {
+    // Is it right to hold the lock for this whole time? Or would the user want to see new results as they come in?
+    let lines= lines_mtx.lock().expect("Could not take lock in search event handler");
+
     let mut highlight_line_no = None;
     let mut search = String::new();
 
@@ -202,17 +220,17 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
                 match event.code {
                     crossterm::event::KeyCode::Char(c) => {
                         search.push(c);
-                        write_status_message(&format!("{}: {}", prompt, search));
                     }
                     crossterm::event::KeyCode::Backspace => {
                         if search.len() > 0 {
                             search.pop();
                         } else {
+                            overwrite_last_n_lines(&lines, *pos, highlight_line_no);
                             return;
                         }
-                        write_status_message(&format!("{}: {}", prompt, search));
                     }
                     crossterm::event::KeyCode::Esc => {
+                        overwrite_last_n_lines(&lines, *pos, highlight_line_no);
                         return;
                     }
                     crossterm::event::KeyCode::Enter => {
@@ -226,60 +244,42 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
                 continue;
             }
         }
+        let matches = get_matches(&lines, search.trim(), match_regex);
+        let _ = jump_to_match(&lines, &matches, pos, page_up_size, search.trim(), match_regex, 0);
+        write_status_message(&format!("{}: {}", prompt, search));
     }
 
     {
-        // Is it right to hold the lock for this whole time? Or would the user want to see new results as they come in?
-        let lines= lines_mtx.lock().expect("Could not take lock in search event handler");
-
+        let mut match_no = 0;
         let matches = get_matches(&lines, search.trim(), match_regex);
-        if matches.len() == 0 {
-            write_status_message("No matches found");
-        } else {
-            *pos = pos_with_in_view(Some(matches[0]), page_up_size);
-            highlight_line_no = Some(matches[0]);
-            overwrite_last_n_lines(&lines, *pos, highlight_line_no);
+        let _ = jump_to_match(&lines, &matches, pos, page_up_size, search.trim(), match_regex, match_no);
 
-            let mut match_no = 0;
-            write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
-
-            loop {
-                match term_rx.recv() {
-                    Ok(TerminalThreadMessage::KeyEvent(event)) => {
-                        if event.kind != KeyEventKind::Press {
-                            continue;
-                        }
-                        match event.code {
-                            crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('q') => {
-                                highlight_line_no = None;
-                                overwrite_last_n_lines(&lines, *pos, highlight_line_no);
-                                break;
-                            }
-                            crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Right | crossterm::event::KeyCode::Enter => {
-                                match_no = (match_no + 1) % matches.len();
-
-                                *pos = pos_with_in_view(Some(matches[match_no]), page_up_size);
-                                highlight_line_no = Some(matches[match_no]);
-                                overwrite_last_n_lines(&lines, *pos, highlight_line_no);
-
-                                write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
-                            }
-                            crossterm::event::KeyCode::Char('p') | crossterm::event::KeyCode::Up |  crossterm::event::KeyCode::Left => {
-                                match_no = if match_no > 0 { match_no - 1 } else { matches.len() - 1 };
-
-                                *pos = pos_with_in_view(Some(matches[match_no]), page_up_size);
-                                highlight_line_no = Some(matches[match_no]);
-                                overwrite_last_n_lines(&lines, *pos, highlight_line_no);
-
-                                write_status_message(&format!("Match {}/{} on line {}", match_no + 1, matches.len(), matches[match_no] + 1));
-                            }
-                            _ => {
-                            }
-                        }
-                    },
-                    _ => {
+        loop {
+            match term_rx.recv() {
+                Ok(TerminalThreadMessage::KeyEvent(event)) => {
+                    if event.kind != KeyEventKind::Press {
                         continue;
                     }
+                    match event.code {
+                        crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('q') => {
+                            highlight_line_no = None;
+                            overwrite_last_n_lines(&lines, *pos, highlight_line_no);
+                            break;
+                        }
+                        crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Right | crossterm::event::KeyCode::Enter => {
+                            match_no = (match_no + 1) % matches.len();
+                            let _ = jump_to_match(&lines, &matches, pos, page_up_size, search.trim(), match_regex, match_no);
+                        }
+                        crossterm::event::KeyCode::Char('p') | crossterm::event::KeyCode::Up |  crossterm::event::KeyCode::Left => {
+                            match_no = if match_no > 0 { match_no - 1 } else { matches.len() - 1 };
+                            let _ = jump_to_match(&lines, &matches, pos, page_up_size, search.trim(), match_regex, match_no);
+                        }
+                        _ => {
+                        }
+                    }
+                },
+                _ => {
+                    continue;
                 }
             }
         }
@@ -573,13 +573,13 @@ impl LineReader for FileReader {
 struct WatchingFileReader {
     file: File,
     offset: usize,
-    rx: mpsc::Receiver<Result<notify::Event>>,
+    rx: mpsc::Receiver<notify::Result<notify::Event>>,
 }
 
 impl WatchingFileReader {
     pub fn new(path: &str) -> Self {
         let file = File::open(path).expect("Could not open input file");
-        let (tx, rx) = mpsc::channel::<Result<notify::Event>>();
+        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
         let mut watcher = notify::recommended_watcher(tx).expect("Could not create file watcher");
 
         watcher.watch(Path::new(path), RecursiveMode::NonRecursive).expect("Could not watch file");
