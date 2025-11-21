@@ -325,7 +325,7 @@ fn handle_go_to_line(pos: Option<usize>, n_lines: usize, term_rx: &mpsc::Receive
 }
 
 fn pos_with_in_view(pos: Option<usize>, page_up_size: usize) -> Option<usize> {
-    return if let Some(n) = pos { 
+    if let Some(n) = pos {
         if n >= page_up_size {
             Some(n - page_up_size)
         } else {
@@ -333,7 +333,7 @@ fn pos_with_in_view(pos: Option<usize>, page_up_size: usize) -> Option<usize> {
         }
     } else {
         pos
-    };
+    }
 }
 
 fn get_pos(pos: Option<usize>, n_lines: usize, n_rows: usize, requested_offset: i32) -> Option<usize> {
@@ -358,13 +358,13 @@ fn get_pos(pos: Option<usize>, n_lines: usize, n_rows: usize, requested_offset: 
             }
             Some(n - (-requested_offset as usize))
         } else {
-            if n_lines < n_rows {
-                Some(0)
-            } else if n_lines - n_rows < -requested_offset as usize {
-                Some(0)
-            } else {
-                Some(n_lines - n_rows - (-requested_offset as usize))
+            if n_lines < -requested_offset as usize {
+                return Some(0);
             }
+            if n_lines < n_rows {
+                return Some(n_lines - (-requested_offset as usize));
+            }
+            return Some(n_lines - n_rows - (-requested_offset as usize))
         }
     }
 }
