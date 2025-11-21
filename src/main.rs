@@ -15,6 +15,33 @@ fn get_tty() -> File {
     File::open("CON").expect("Could not open CON")
 }
 
+fn print_line(line: &str, highlight: bool) {
+    let mut output = stdout();
+    if highlight {
+        queue!(
+                output,
+                SetBackgroundColor(Color::Cyan),
+                SetForegroundColor(Color::Black),
+                Print(line),
+                ResetColor
+            ).unwrap();
+    }else {
+        queue!(output, Print(line)).unwrap();
+    }
+}
+
+fn trim_trailing_newlines(s: &str) -> &str {
+    let mut end = s.len();
+    for (i, c) in s.char_indices().rev() {
+        if c == '\n' || c == '\r' {
+            end = i;
+        } else {
+            break;
+        }
+    }
+    &s[0..end]
+}
+
 fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_line_no: Option<usize>) {
     let (cols, rows) = crossterm::terminal::size().expect("Could not get terminal size");
     let mut output = stdout();
@@ -31,7 +58,7 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
         } else {
             n
         }
-    } else { 
+    } else {
         if lines.len() < rows as usize {
             0
         } else {
@@ -39,44 +66,27 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
         }
     };
 
-    let mut displayed_lines = vec![];
+    let mut displayed_lines = 0;
     for i in start..(start + rows as usize - 1) {
         if i >= lines.len() {
             break;
         }
         let mut cur_line = lines[i].as_str();
 
-        while displayed_lines.len() < rows as usize - 1{
+        while pos.is_none() || displayed_lines < rows as usize - 1 {
             if cur_line.len() > cols as usize {
-                displayed_lines.push((format!("{}\r\n", {&cur_line[0..cols as usize]}), i));
+                print_line(format!("{}\r\n", trim_trailing_newlines(&cur_line[0..cols as usize])).as_str(), highlight_line_no == Some(i));
                 cur_line = &cur_line[cols as usize..];
+                displayed_lines += 1;
             } else {
-                displayed_lines.push((cur_line.to_string(), i));
+                print_line(format!("{}\r\n", trim_trailing_newlines(cur_line)).as_str(), highlight_line_no == Some(i));
+                displayed_lines += 1;
                 break;
             }
         }
     }
 
-    for (display_line, i) in displayed_lines {
-        if i >= lines.len() {
-            break;
-        }
-
-        match highlight_line_no {
-            Some(j) if i == j => {
-                queue!(
-                    output,
-                    SetBackgroundColor(Color::Cyan),
-                    SetForegroundColor(Color::Black),
-                    Print(display_line),
-                    ResetColor
-                ).unwrap();
-            }
-            _ => {
-                queue!(output, Print(display_line)).unwrap();
-            }
-        }
-    }
+    write_status_message(format!("Cols: {}, Rows: {}, Lines: {}, Pos: {:?} displayed_lines: {}", cols, rows, lines.len(), pos, displayed_lines).as_str());
 
     output.flush().expect("Could not flush output");
 }
@@ -337,17 +347,13 @@ fn pos_with_in_view(pos: Option<usize>, page_up_size: usize) -> Option<usize> {
 }
 
 fn get_pos(pos: Option<usize>, n_lines: usize, n_rows: usize, requested_offset: i32) -> Option<usize> {
-    if n_lines < n_rows {
-        return None;
-    }
-
     if requested_offset == 0 {
         return pos;
     } else if requested_offset > 0 {
         if let Some(mut n) = pos {
             n += requested_offset as usize;
 
-            if n > n_lines - n_rows {
+            if n >= n_lines {
                 return None;
             }
 
@@ -363,7 +369,7 @@ fn get_pos(pos: Option<usize>, n_lines: usize, n_rows: usize, requested_offset: 
             return Some(n - (-requested_offset as usize));
         } else {
             if n_lines < n_rows {
-                return None;
+                return Some(0);
             } else if n_lines - n_rows < -requested_offset as usize {
                 return Some(0);
             } else {
@@ -488,7 +494,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
                     overwrite_last_n_lines(&lines, pos, None);
                 }
                 TerminalThreadMessage::Read => {
-                    {
+                    if pos.is_none() {
                         let lines = lines_mtx.lock().expect("Could not take lock in read event handler");
 
                         if lines.len() != last_line_length as usize {
