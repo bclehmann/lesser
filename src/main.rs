@@ -1,4 +1,5 @@
 use std::{fs::File, io::{stdout, BufRead, BufReader, Write}, sync::{mpsc, Arc, Mutex}, thread, time::Duration};
+use std::process::exit;
 use crossterm::{
     cursor::{MoveTo, MoveUp}, event::{poll, read, Event, KeyEventKind, KeyModifiers}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen}
 };
@@ -122,6 +123,8 @@ fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<
     let mut line = String::new();
 
     while let Ok(n) = input_reader.read_line(&mut line) {
+        // Note that because read_line is blocking, try_recv might get called late
+        // This is fine, as when we call exit in the terminal thread
         if let Ok(message) = rx.try_recv() {
             match message {
                 ReaderThreadMessage::Exit => {
@@ -513,6 +516,7 @@ fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Send
 
     let _ = reader_tx.send(ReaderThreadMessage::Exit); // If it's not received that's ok, that probably means the thread has already exited
     let _ = input_tx.send(InputThreadMessage::Exit); // If it's not received that's ok, that probably means the thread has already exited
+    exit(0);
 }
 
 fn input_thread_fn(term_tx: mpsc::Sender<TerminalThreadMessage>, input_rx: mpsc::Receiver<InputThreadMessage>) {
