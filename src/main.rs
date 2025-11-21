@@ -3,6 +3,7 @@ use crossterm::{
     cursor::{MoveTo, MoveUp}, event::{poll, read, Event, KeyEventKind, KeyModifiers}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen}
 };
 use crossterm::terminal::DisableLineWrap;
+use clap::Parser;
 
 #[cfg(unix)]
 fn get_tty() -> File {
@@ -117,12 +118,10 @@ fn get_matches(lines: &Vec<String>, search: &str, is_regex: bool) -> Vec<usize> 
     matches
 }
 
-fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<ReaderThreadMessage>, term_tx: mpsc::Sender<TerminalThreadMessage>) {
-    let stdin = std::io::stdin();
-    let mut reader = BufReader::new(stdin);
+fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<ReaderThreadMessage>, term_tx: mpsc::Sender<TerminalThreadMessage>, mut input_reader: Box<dyn BufRead>) {
     let mut line = String::new();
 
-    while let Ok(n) = reader.read_line(&mut line) {
+    while let Ok(n) = input_reader.read_line(&mut line) {
         if let Ok(message) = rx.try_recv() {
             match message {
                 ReaderThreadMessage::Exit => {
@@ -555,7 +554,26 @@ fn input_thread_fn(term_tx: mpsc::Sender<TerminalThreadMessage>, input_rx: mpsc:
     }
 }
 
+#[derive(clap::Parser)]
+#[derive(Debug)]
+struct Args {
+    filename: Option<String>,
+}
+
 fn main() {
+    let args = Args::parse();
+
+    let input_reader = match &args.filename {
+        Some(filename) => {
+            let file = File::open(filename).expect("Could not open input file");
+            Box::new(BufReader::new(file)) as Box<dyn BufRead + Send>
+        }
+        None => {
+            let stdin = std::io::stdin();
+            Box::new(BufReader::new(stdin)) as Box<dyn BufRead + Send>
+        }
+    };
+
     let mut lines_raw = Vec::<String>::new();
     let lines_mtx = Arc::new(Mutex::new(&mut lines_raw));
     let reader_thread_mtx = Arc::clone(&lines_mtx);
@@ -566,7 +584,7 @@ fn main() {
 
     let term_tx2 = term_tx.clone();
     thread::scope(|scope| {
-        scope.spawn(move|| reader_thread_fn(reader_thread_mtx, reader_rx, term_tx));
+        scope.spawn(move|| reader_thread_fn(reader_thread_mtx, reader_rx, term_tx, input_reader));
         scope.spawn(move|| term_thread_fn(lines_mtx, reader_tx, term_rx, input_tx));
         scope.spawn(move|| input_thread_fn(term_tx2, input_rx));
     });

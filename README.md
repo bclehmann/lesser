@@ -28,5 +28,4 @@ I wrote this in an afternoon and I haven't really cleaned up the code since I go
 
 ## Features I'd like to add
 
-- Support opening files, rather than just using STDIN. This could probably address the Powershell issue above
 - Rewriting the whole screen on every change is probably not ideal from a performance perspective. But I don't yet know if it'll be a big problem
