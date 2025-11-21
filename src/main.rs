@@ -16,7 +16,7 @@ fn get_tty() -> File {
 }
 
 fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_line_no: Option<usize>) {
-    let (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
+    let (cols, rows) = crossterm::terminal::size().expect("Could not get terminal size");
     let mut output = stdout();
 
     queue!(output, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), MoveTo(0, 0)).unwrap();
@@ -39,7 +39,25 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
         }
     };
 
+    let mut displayed_lines = vec![];
     for i in start..(start + rows as usize - 1) {
+        if i >= lines.len() {
+            break;
+        }
+        let mut cur_line = lines[i].as_str();
+
+        while displayed_lines.len() < rows as usize - 1{
+            if cur_line.len() > cols as usize {
+                displayed_lines.push((format!("{}\r\n", {&cur_line[0..cols as usize]}), i));
+                cur_line = &cur_line[cols as usize..];
+            } else {
+                displayed_lines.push((cur_line.to_string(), i));
+                break;
+            }
+        }
+    }
+
+    for (display_line, i) in displayed_lines {
         if i >= lines.len() {
             break;
         }
@@ -50,12 +68,12 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
                     output,
                     SetBackgroundColor(Color::Cyan),
                     SetForegroundColor(Color::Black),
-                    Print(lines[i].clone()),
+                    Print(display_line),
                     ResetColor
                 ).unwrap();
             }
             _ => {
-                queue!(output, Print(lines[i].clone())).unwrap();
+                queue!(output, Print(display_line)).unwrap();
             }
         }
     }
