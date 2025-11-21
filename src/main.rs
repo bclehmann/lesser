@@ -2,6 +2,7 @@ use std::{fs::File, io::{stdout, BufRead, BufReader, Write}, sync::{mpsc, Arc, M
 use crossterm::{
     cursor::{MoveTo, MoveUp}, event::{poll, read, Event, KeyEventKind, KeyModifiers}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen}
 };
+use crossterm::terminal::DisableLineWrap;
 
 #[cfg(unix)]
 fn get_tty() -> File {
@@ -363,6 +364,7 @@ fn page_by(lines: &Vec<String>, pos: &mut Option<usize>, offset: i32) {
 
 fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Sender<ReaderThreadMessage>, term_rx: mpsc::Receiver<TerminalThreadMessage>, input_tx: mpsc::Sender<InputThreadMessage>) {
     execute!(stdout(), EnterAlternateScreen).unwrap();
+    execute!(stdout(), DisableLineWrap).unwrap();
     let mut pos: Option<usize> = Some(0);
     let mut last_line_length: i32= -1;
 
