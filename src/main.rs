@@ -50,6 +50,7 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
 
     queue!(output, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), MoveTo(0, 0)).unwrap();
 
+    let mut max_displayed_lines = rows;
     let mut start = pos.unwrap_or(
         if lines.len() < rows as usize {
             0
@@ -58,6 +59,18 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
         }
     );
 
+    if lines.len() - start < rows as usize - 1 {
+        let old_start = start;
+        start = if lines.len() > rows as usize {
+            lines.len() - (rows as usize - 1)
+        } else {
+            0
+        };
+
+        let diff = (old_start as isize) - (start as isize);
+        max_displayed_lines = rows + diff as u16;
+    }
+
     let mut displayed_lines = 0;
     for i in start..(start + rows as usize - 1) {
         if i >= lines.len() {
@@ -65,7 +78,7 @@ fn overwrite_last_n_lines(lines: &Vec<String>, pos: Option<usize>, highlight_lin
         }
         let mut cur_line = lines[i].as_str();
 
-        while pos.is_none() || displayed_lines < rows as usize - 1 {
+        while pos.is_none() || displayed_lines < max_displayed_lines as usize - 1 {
             if cur_line.len() > cols as usize {
                 print_line(format!("{}\r\n", trim_trailing_newlines(&cur_line[0..cols as usize])).as_str(), highlight_line_no == Some(i));
                 cur_line = &cur_line[cols as usize..];
