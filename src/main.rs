@@ -1,10 +1,13 @@
 use std::{fs::File, io::{stdout, BufRead, BufReader, Write}, sync::{mpsc, Arc, Mutex}, thread, time::Duration};
+use std::io::{Read, Seek};
+use std::path::Path;
 use std::process::exit;
 use crossterm::{
     cursor::{MoveTo, MoveUp}, event::{poll, read, Event, KeyEventKind, KeyModifiers}, execute, queue, style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor}, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen}
 };
 use crossterm::terminal::DisableLineWrap;
 use clap::Parser;
+use notify::{RecursiveMode, Result, Watcher};
 
 #[cfg(unix)]
 fn get_tty() -> File {
@@ -119,12 +122,12 @@ fn get_matches(lines: &Vec<String>, search: &str, is_regex: bool) -> Vec<usize> 
     matches
 }
 
-fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<ReaderThreadMessage>, term_tx: mpsc::Sender<TerminalThreadMessage>, mut input_reader: Box<dyn BufRead>) {
+fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<ReaderThreadMessage>, term_tx: mpsc::Sender<TerminalThreadMessage>, mut input_reader: Box<dyn LineReader>) {
     let mut line = String::new();
 
     while let Ok(n) = input_reader.read_line(&mut line) {
         // Note that because read_line is blocking, try_recv might get called late
-        // This is fine, as when we call exit in the terminal thread
+        // This is fine, as we call exit in the terminal thread bringing everything down with us
         if let Ok(message) = rx.try_recv() {
             match message {
                 ReaderThreadMessage::Exit => {
@@ -558,23 +561,111 @@ fn input_thread_fn(term_tx: mpsc::Sender<TerminalThreadMessage>, input_rx: mpsc:
     }
 }
 
+trait LineReader: Send {
+    fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize>;
+}
+
+struct StdinReader {
+    stdin: std::io::Stdin,
+}
+
+impl LineReader for StdinReader {
+    fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize> {
+        self.stdin.read_line(buf)
+    }
+}
+
+struct FileReader {
+    reader: BufReader<File>,
+}
+
+impl FileReader {
+    pub fn new(path: &str) -> Self {
+        let file = File::open(path).expect("Could not open input file");
+        let reader = BufReader::new(file);
+
+        FileReader {
+            reader,
+        }
+    }
+}
+
+impl LineReader for FileReader {
+    fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize> {
+        self.reader.read_line(buf)
+    }
+}
+
+struct WatchingFileReader {
+    file: File,
+    offset: usize,
+    rx: mpsc::Receiver<Result<notify::Event>>,
+}
+
+impl WatchingFileReader {
+    pub fn new(path: &str) -> Self {
+        let file = File::open(path).expect("Could not open input file");
+        let (tx, rx) = mpsc::channel::<Result<notify::Event>>();
+        let mut watcher = notify::recommended_watcher(tx).expect("Could not create file watcher");
+
+        watcher.watch(Path::new(path), RecursiveMode::NonRecursive).expect("Could not watch file");
+
+        WatchingFileReader {
+            file,
+            offset: 0,
+            rx,
+        }
+    }
+}
+
+impl LineReader for WatchingFileReader {
+    fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize> {
+        while self.file.metadata()?.len() <= self.offset as u64 {
+            for res in &self.rx { // A normal recv immediately returns an error. Perhaps a sender and receiver on the same thread is not a good idea?
+                match res {
+                    Ok(notify::Event { .. }) => {
+                        break;
+                    }
+                    Err(_) => {
+                        return Err(std::io::Error::new(std::io::ErrorKind::Other, "File watch channel disconnected"));
+                    }
+                }
+            }
+
+            thread::sleep(Duration::from_millis(250));
+        }
+
+        let mut reader = BufReader::new(&self.file);
+        reader.seek(std::io::SeekFrom::Start(self.offset as u64))?;
+        let n = reader.read_line(buf)?;
+        self.offset += n;
+        Ok(n)
+    }
+}
+
 #[derive(clap::Parser)]
 #[derive(Debug)]
 struct Args {
     filename: Option<String>,
+
+    #[arg(long)]
+    watch: bool,
 }
 
 fn main() {
     let args = Args::parse();
 
-    let input_reader = match &args.filename {
+    let input_reader: Box<dyn LineReader> = match &args.filename {
         Some(filename) => {
-            let file = File::open(filename).expect("Could not open input file");
-            Box::new(BufReader::new(file)) as Box<dyn BufRead + Send>
+            if !args.watch {
+                Box::new(FileReader::new(filename))
+            } else {
+                Box::new(WatchingFileReader::new(filename))
+            }
         }
         None => {
             let stdin = std::io::stdin();
-            Box::new(BufReader::new(stdin)) as Box<dyn BufRead + Send>
+            Box::new(StdinReader { stdin })
         }
     };
 
