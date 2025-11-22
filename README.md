@@ -29,3 +29,5 @@ I wrote this in an afternoon and I haven't really cleaned up the code since I go
 ## Features I'd like to add
 
 - Rewriting the whole screen on every change is probably not ideal from a performance perspective. But I don't yet know if it'll be a big problem
+- Multiplexing different files
+  - My thinking is `lesser logs/*` should multiplex all the files in the logs directory, and you can switch between them or see them all interleaved with eachother (with some prefix to indicate which file each line came from)
