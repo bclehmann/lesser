@@ -23,8 +23,14 @@ pub fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Recei
         // It's entirely possible that this will break things for normal Unix terminals, so this
         // might need revisiting
         if !line.ends_with("\r\n") {
-            line.pop();
-            line.push_str("\r\n");
+            if line.ends_with('\n') {
+                line.pop();
+                line.push_str("\r\n");
+            } else if line.ends_with('\r') {
+                line.push_str("\n");
+            } else {
+                line.push_str("\r\n");
+            }
         }
 
         if n == 0 {
