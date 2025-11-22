@@ -53,20 +53,23 @@ pub struct WatchingFileReader {
     file: File,
     offset: usize,
     rx: mpsc::Receiver<notify::Result<notify::Event>>,
+    watcher: notify::RecommendedWatcher,
 }
 
 impl WatchingFileReader {
     pub fn new(path: &str) -> Self {
         let file = File::open(path).expect("Could not open input file");
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
-        let mut watcher = notify::recommended_watcher(tx).expect("Could not create file watcher");
 
+        let mut watcher = notify::recommended_watcher(tx).expect("Could not create file watcher");
         watcher.watch(Path::new(path), RecursiveMode::NonRecursive).expect("Could not watch file");
+
 
         WatchingFileReader {
             file,
             offset: 0,
             rx,
+            watcher,
         }
     }
 }
@@ -74,18 +77,14 @@ impl WatchingFileReader {
 impl LineReader for WatchingFileReader {
     fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize> {
         while self.file.metadata()?.len() <= self.offset as u64 {
-            for res in &self.rx { // A normal recv immediately returns an error. Perhaps a sender and receiver on the same thread is not a good idea?
-                match res {
-                    Ok(notify::Event { .. }) => {
-                        break;
-                    }
-                    Err(_) => {
-                        return Err(std::io::Error::new(std::io::ErrorKind::Other, "File watch channel disconnected"));
-                    }
+            match &self.rx.recv() {
+                Ok(_) => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
                 }
             }
-
-            thread::sleep(Duration::from_millis(250));
         }
 
         let mut reader = BufReader::new(&self.file);
