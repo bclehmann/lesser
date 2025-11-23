@@ -88,6 +88,11 @@ fn main() {
         }
     };
 
+    if sources.len() == 0 {
+        eprintln!("No valid input sources");
+        std::process::exit(1);
+    }
+
     let (term_tx, term_rx) = mpsc::channel::<TerminalThreadMessage>();
 
     let term_tx2 = term_tx.clone();
