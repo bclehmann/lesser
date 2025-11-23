@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
-use notify::{RecursiveMode, Watcher};
+use notify::{Config, RecursiveMode, Watcher};
 
 pub trait LineReader: Send {
     fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize>;
@@ -52,15 +52,26 @@ pub struct WatchingFileReader {
     file: File,
     offset: usize,
     rx: mpsc::Receiver<notify::Result<notify::Event>>,
-    watcher: notify::RecommendedWatcher,
+    watcher: notify::PollWatcher,
 }
 
 impl WatchingFileReader {
     pub fn new(file: File, path: &str) -> Self {
+        let (watcher_tx, watcher_rx) = mpsc::channel::<notify::Result<notify::Event>>();
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
 
-        let mut watcher = notify::recommended_watcher(tx).expect("Could not create file watcher");
+        // I've been having difficulties with recommended_watcher so polling it is :/
+        let mut watcher = notify::PollWatcher::new(watcher_tx,Config::default().with_poll_interval(Duration::from_millis(500))).expect("Could not create file watcher");
         watcher.watch(Path::new(path), RecursiveMode::NonRecursive).expect("Could not watch file");
+
+        thread::spawn(move || {
+            let msg = watcher_rx.recv();
+            if let Ok(v) = msg {
+                tx.send(v).expect("Could not send file change event");
+            } else {
+                eprintln!("File watcher error: {:?}", msg);
+            }
+        });
 
 
         WatchingFileReader {
@@ -80,6 +91,7 @@ impl LineReader for WatchingFileReader {
                     continue;
                 }
                 Err(e) => {
+                    eprintln!("File changed, error: {:?}", e);
                     return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
                 }
             }
