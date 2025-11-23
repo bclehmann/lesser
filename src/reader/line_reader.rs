@@ -88,10 +88,11 @@ impl LineReader for WatchingFileReader {
         while self.file.metadata()?.len() <= self.offset as u64 {
             match &self.rx.recv() {
                 Ok(_) => {
+                    eprintln!("File changed!");
                     continue;
                 }
                 Err(e) => {
-                    eprintln!("File changed, error: {:?}", e);
+                    eprintln!("Error: {:?}", e);
                     return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
                 }
             }
