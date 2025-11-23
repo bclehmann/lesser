@@ -109,7 +109,7 @@ impl Source for ReadableSource {
 
         let listeners = self.listeners.lock().map_err(|e| format!("Could not lock listeners mutex: {}", e))?;
         for listener in listeners.iter() {
-            listener.add_line(line.clone())?;
+            listener.add_line(format!("[{}]: {}", self.name, line))?;
         }
 
         Ok(())
