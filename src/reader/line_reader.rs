@@ -33,8 +33,7 @@ pub struct FileReader {
 }
 
 impl FileReader {
-    pub fn new(path: &str) -> Self {
-        let file = File::open(path).expect("Could not open input file");
+    pub fn new(file: File) -> Self {
         let reader = BufReader::new(file);
 
         FileReader {
@@ -57,8 +56,7 @@ pub struct WatchingFileReader {
 }
 
 impl WatchingFileReader {
-    pub fn new(path: &str) -> Self {
-        let file = File::open(path).expect("Could not open input file");
+    pub fn new(file: File, path: &str) -> Self {
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
 
         let mut watcher = notify::recommended_watcher(tx).expect("Could not create file watcher");

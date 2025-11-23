@@ -4,7 +4,7 @@ mod input;
 mod reader;
 
 use std::{fs::File, io::{BufRead, Write}, sync::{mpsc, Arc, Mutex}, thread};
-use std::cell::Cell;
+use std::fs::metadata;
 use std::io::{Read, Seek};
 use clap::Parser;
 use notify::{Watcher};
@@ -45,25 +45,35 @@ fn main() {
 
     let mut sources: Vec<Arc<Source>> = match &args.filenames {
         Some(filenames) => {
-            filenames.iter().map(|fname| {
+            filenames.iter().flat_map(|pattern| glob::glob(pattern).expect("Could not create glob").into_iter()).map(|path| {
+                let fname = path.expect("Could not read globbed path").to_string_lossy().to_string();
+                let file = File::open(fname.as_str()).expect("Could not open input file");
+                if file.metadata().expect("Could not read metadata").is_dir() {
+                    return None;
+                }
+
                 if !args.watch {
-                    Arc::new(
-                        Source {
-                            name: fname.clone(),
-                            reader: Mutex::new(Box::new(FileReader::new(fname)) as Box<dyn LineReader>),
-                            lines: Mutex::new(Vec::<String>::new()),
-                        }
+                    Some(
+                            Arc::new(
+                            Source {
+                                reader: Mutex::new(Box::new(FileReader::new(file)) as Box<dyn LineReader>),
+                                name: fname,
+                                lines: Mutex::new(Vec::<String>::new()),
+                            }
+                        )
                     )
                 } else {
-                    Arc::new(
-                        Source {
-                            name: fname.clone(),
-                            reader: Mutex::new(Box::new(WatchingFileReader::new(fname)) as Box<dyn LineReader>),
-                            lines: Mutex::new(Vec::<String>::new()),
-                        }
+                    Some(
+                            Arc::new(
+                            Source {
+                                reader: Mutex::new(Box::new(WatchingFileReader::new(file, fname.as_str())) as Box<dyn LineReader>),
+                                name: fname,
+                                lines: Mutex::new(Vec::<String>::new()),
+                            }
+                        )
                     )
                 }
-            }).collect()
+            }).filter(|s| s.is_some()).map(|s| s.unwrap()).collect()
         }
         None => {
             vec!(

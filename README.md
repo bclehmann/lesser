@@ -8,7 +8,7 @@ This is a basic terminal pager that has support for searching. I made this becau
 - Search by pressing `/`, or regex search with `r`
 - Suitable for paging through streaming input
     - note that on Powershell `foo | lesser` will _not_ pipe anything in until `foo` terminates. I may make a workaround, but even though I'm a Windows user I use WSL for work, so I haven't found a way to address this
-- Open multiple files at once: `lesser file1 file2 ...` (switch between them with `s`)
+- Open multiple files at once: `lesser file1 file2 ...` or with a glob like `lesser dir/*` (switch between them with `s`)
 
 ## Controls
 
