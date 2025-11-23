@@ -5,9 +5,13 @@ use crate::messaging::{TerminalThreadMessage};
 use crate::reader::line_reader::LineReader;
 use crate::Source;
 
-pub fn reader_thread_fn(source: Arc<Source>, term_tx: mpsc::Sender<TerminalThreadMessage>) {
+pub fn reader_thread_fn(source: Arc<dyn Source>, term_tx: mpsc::Sender<TerminalThreadMessage>) {
     let mut line = String::new();
-    let mut reader = source.reader.lock().expect("Could not take lock in reader_thread");
+    let mut reader = source
+        .get_reader()
+        .expect("Source has no reader")
+        .lock()
+        .expect("Could not take lock in reader_thread");
 
     while let Ok(n) = reader.read_line(&mut line) {
         // This isn't really for Windows, it's for Windows terminal emulators running under WSL
@@ -28,10 +32,7 @@ pub fn reader_thread_fn(source: Arc<Source>, term_tx: mpsc::Sender<TerminalThrea
         if n == 0 {
             break;
         }
-        {
-            let mut lines: std::sync::MutexGuard<'_, Vec<String>> = source.lines.lock().expect("Could not take lock in reader_thread");
-            lines.push(line.clone());
-        }
+        source.add_line(line.clone()).expect("Could not add new line");
 
         line.clear();
         term_tx.send(TerminalThreadMessage::Read).expect("Could not send message to terminal thread");
