@@ -15,8 +15,8 @@ const PAGE_UP_SIZE: usize = 10;
 pub fn term_thread_fn(sources: &[Arc<Source>], term_rx: mpsc::Receiver<TerminalThreadMessage>) {
     execute!(stdout(), EnterAlternateScreen).unwrap();
     execute!(stdout(), DisableLineWrap).unwrap();
-    let mut pos: Option<usize> = Some(0);
 
+    let mut pos_by_source = sources.iter().map(|_| Some(0)).collect::<Vec<Option<usize>>>();
     let mut source_index = 0;
 
     thread::sleep(Duration::from_millis(100)); // i.e. make sure there's some stuff to read on first draw
@@ -24,7 +24,7 @@ pub fn term_thread_fn(sources: &[Arc<Source>], term_rx: mpsc::Receiver<TerminalT
         let (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
         let lines = sources[source_index].lines.lock().expect("Could not take lock in term_thread");
         if lines.len() < rows as usize { // If there aren't many lines we can start in autoscroll
-            pos = None;
+            pos_by_source[source_index] = None;
         }
     }
 
@@ -45,32 +45,32 @@ pub fn term_thread_fn(sources: &[Arc<Source>], term_rx: mpsc::Receiver<TerminalT
                         crossterm::event::KeyCode::Up => {
                             {
                                 let lines = sources[source_index].lines.lock().expect("Could not take lock in ArrrowUp event handler");
-                                page_by(&lines, &mut pos, -1);
+                                page_by(&lines, &mut pos_by_source[source_index], -1);
                             }
                         }
                         crossterm::event::KeyCode::Char('u') | crossterm::event::KeyCode::Char('U') | crossterm::event::KeyCode::PageUp => {
                             {
                                 let lines = sources[source_index].lines.lock().expect("Could not take lock in PgUp event handler");
-                                page_by(&lines, &mut pos, -(PAGE_UP_SIZE as i32));
+                                page_by(&lines, &mut pos_by_source[source_index], -(PAGE_UP_SIZE as i32));
                             }
                         }
                         crossterm::event::KeyCode::Down => {
                             {
                                 let lines = sources[source_index].lines.lock().expect("Could not take lock in ArrowDown event handler");
-                                page_by(&lines, &mut pos, 1);
+                                page_by(&lines, &mut pos_by_source[source_index], 1);
                             }
                         }
                         crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::Char('D') | crossterm::event::KeyCode::PageDown | crossterm::event::KeyCode::Char(' ') => {
                             {
                                 let lines = sources[source_index].lines.lock().expect("Could not take lock in PgDn event handler");
-                                page_by(&lines, &mut pos, PAGE_UP_SIZE as i32);
+                                page_by(&lines, &mut pos_by_source[source_index], PAGE_UP_SIZE as i32);
                             }
                         }
                         crossterm::event::KeyCode::Enter => {
-                            pos = None;
+                            pos_by_source[source_index] = None;
                             {
                                 let lines = sources[source_index].lines.lock().expect("Could not take lock in Enter event handler");
-                                overwrite_last_n_lines(&lines, pos, None);
+                                overwrite_last_n_lines(&lines, pos_by_source[source_index], None);
                             }
                         }
                         crossterm::event::KeyCode::Char('g') | crossterm::event::KeyCode::Char('G') => {
@@ -78,29 +78,28 @@ pub fn term_thread_fn(sources: &[Arc<Source>], term_rx: mpsc::Receiver<TerminalT
                             {
                                 let lines = sources[source_index].lines.lock().expect("Could not take lock in goto line event handler");
                                 if event.modifiers.contains(KeyModifiers::SHIFT) {
-                                    pos = None;
+                                    pos_by_source[source_index] = None;
                                 } else {
-                                    let line_no: Option<usize> = handle_go_to_line(pos, lines.len(), &term_rx);
+                                    let line_no: Option<usize> = handle_go_to_line(pos_by_source[source_index], lines.len(), &term_rx);
                                     highlight_line_no = line_no;
-                                    pos = pos_with_in_view(line_no, PAGE_UP_SIZE);
+                                    pos_by_source[source_index] = pos_with_in_view(line_no, PAGE_UP_SIZE);
                                 }
-                                overwrite_last_n_lines(&lines, pos, highlight_line_no);
+                                overwrite_last_n_lines(&lines, pos_by_source[source_index], highlight_line_no);
                             }
                         }
                         crossterm::event::KeyCode::Char('/') => {
-                            handle_search_mode(&mut pos, &sources[source_index].lines, &term_rx, PAGE_UP_SIZE, false);
+                            handle_search_mode(&mut pos_by_source[source_index], &sources[source_index].lines, &term_rx, PAGE_UP_SIZE, false);
                         }
                         crossterm::event::KeyCode::Char('r') | crossterm::event::KeyCode::Char('R') => {
-                            handle_search_mode(&mut pos, &sources[source_index].lines, &term_rx, PAGE_UP_SIZE, true);
+                            handle_search_mode(&mut pos_by_source[source_index], &sources[source_index].lines, &term_rx, PAGE_UP_SIZE, true);
                         },
                         crossterm::event::KeyCode::Char('s') | crossterm::event::KeyCode::Char('S') => {
                             source_index += 1;
                             source_index %= sources.len();
-                            pos = None;
 
                             {
                                 let lines = sources[source_index].lines.lock().expect("Could not take lock in source switch event handler");
-                                overwrite_last_n_lines(&lines, pos, None);
+                                overwrite_last_n_lines(&lines, pos_by_source[source_index], None);
                                 write_status_message(format!("Switched to source: {}", sources[source_index].name).as_str());
                             }
                         }
@@ -109,11 +108,11 @@ pub fn term_thread_fn(sources: &[Arc<Source>], term_rx: mpsc::Receiver<TerminalT
                 },
                 TerminalThreadMessage::Resize(_, _) => {
                     let lines = sources[source_index].lines.lock().expect("Could not take lock in resize event handler");
-                    overwrite_last_n_lines(&lines, pos, None);
+                    overwrite_last_n_lines(&lines, pos_by_source[source_index], None);
                 }
                 TerminalThreadMessage::Read => {
                     let lines = sources[source_index].lines.lock().expect("Could not take lock in read event handler");
-                    overwrite_last_n_lines(&lines, pos, None);
+                    overwrite_last_n_lines(&lines, pos_by_source[source_index], None);
                 }
             }
         }
