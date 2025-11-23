@@ -7,21 +7,22 @@ use crossterm::event::{KeyEventKind, KeyModifiers};
 use crossterm::{execute, queue};
 use crossterm::cursor::MoveTo;
 use crossterm::style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap, EnterAlternateScreen, LeaveAlternateScreen};
-use crate::messaging::{InputThreadMessage, ReaderThreadMessage};
-use crate::TerminalThreadMessage;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, DisableLineWrap, EnableLineWrap, EnterAlternateScreen, LeaveAlternateScreen};
+use crate::{Source, TerminalThreadMessage};
 
 const PAGE_UP_SIZE: usize = 10;
 
-pub fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::Sender<ReaderThreadMessage>, term_rx: mpsc::Receiver<TerminalThreadMessage>, input_tx: mpsc::Sender<InputThreadMessage>) {
+pub fn term_thread_fn(sources: &[Arc<Source>], term_rx: mpsc::Receiver<TerminalThreadMessage>) {
     execute!(stdout(), EnterAlternateScreen).unwrap();
     execute!(stdout(), DisableLineWrap).unwrap();
     let mut pos: Option<usize> = Some(0);
 
+    let mut source_index = 0;
+
     thread::sleep(Duration::from_millis(100)); // i.e. make sure there's some stuff to read on first draw
     {
         let (_, rows) = crossterm::terminal::size().expect("Could not get terminal size");
-        let lines = lines_mtx.lock().expect("Could not take lock in term_thread");
+        let lines = sources[source_index].lines.lock().expect("Could not take lock in term_thread");
         if lines.len() < rows as usize { // If there aren't many lines we can start in autoscroll
             pos = None;
         }
@@ -43,39 +44,39 @@ pub fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::
                         }
                         crossterm::event::KeyCode::Up => {
                             {
-                                let lines = lines_mtx.lock().expect("Could not take lock in ArrrowUp event handler");
+                                let lines = sources[source_index].lines.lock().expect("Could not take lock in ArrrowUp event handler");
                                 page_by(&lines, &mut pos, -1);
                             }
                         }
                         crossterm::event::KeyCode::Char('u') | crossterm::event::KeyCode::Char('U') | crossterm::event::KeyCode::PageUp => {
                             {
-                                let lines = lines_mtx.lock().expect("Could not take lock in PgUp event handler");
+                                let lines = sources[source_index].lines.lock().expect("Could not take lock in PgUp event handler");
                                 page_by(&lines, &mut pos, -(PAGE_UP_SIZE as i32));
                             }
                         }
                         crossterm::event::KeyCode::Down => {
                             {
-                                let lines = lines_mtx.lock().expect("Could not take lock in ArrowDown event handler");
+                                let lines = sources[source_index].lines.lock().expect("Could not take lock in ArrowDown event handler");
                                 page_by(&lines, &mut pos, 1);
                             }
                         }
                         crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::Char('D') | crossterm::event::KeyCode::PageDown | crossterm::event::KeyCode::Char(' ') => {
                             {
-                                let lines = lines_mtx.lock().expect("Could not take lock in PgDn event handler");
+                                let lines = sources[source_index].lines.lock().expect("Could not take lock in PgDn event handler");
                                 page_by(&lines, &mut pos, PAGE_UP_SIZE as i32);
                             }
                         }
                         crossterm::event::KeyCode::Enter => {
                             pos = None;
                             {
-                                let lines = lines_mtx.lock().expect("Could not take lock in Enter event handler");
+                                let lines = sources[source_index].lines.lock().expect("Could not take lock in Enter event handler");
                                 overwrite_last_n_lines(&lines, pos, None);
                             }
                         }
                         crossterm::event::KeyCode::Char('g') | crossterm::event::KeyCode::Char('G') => {
                             let mut highlight_line_no = None;
                             {
-                                let lines = lines_mtx.lock().expect("Could not take lock in goto line event handler");
+                                let lines = sources[source_index].lines.lock().expect("Could not take lock in goto line event handler");
                                 if event.modifiers.contains(KeyModifiers::SHIFT) {
                                     pos = None;
                                 } else {
@@ -87,31 +88,42 @@ pub fn term_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, reader_tx: mpsc::
                             }
                         }
                         crossterm::event::KeyCode::Char('/') => {
-                            handle_search_mode(&mut pos, &lines_mtx, &term_rx, PAGE_UP_SIZE, false);
+                            handle_search_mode(&mut pos, &sources[source_index].lines, &term_rx, PAGE_UP_SIZE, false);
                         }
                         crossterm::event::KeyCode::Char('r') | crossterm::event::KeyCode::Char('R') => {
-                            handle_search_mode(&mut pos, &lines_mtx, &term_rx, PAGE_UP_SIZE, true);
+                            handle_search_mode(&mut pos, &sources[source_index].lines, &term_rx, PAGE_UP_SIZE, true);
+                        },
+                        crossterm::event::KeyCode::Char('s') | crossterm::event::KeyCode::Char('S') => {
+                            source_index += 1;
+                            source_index %= sources.len();
+                            pos = None;
+
+                            {
+                                let lines = sources[source_index].lines.lock().expect("Could not take lock in source switch event handler");
+                                overwrite_last_n_lines(&lines, pos, None);
+                                write_status_message(format!("Switched to source: {}", sources[source_index].name).as_str());
+                            }
                         }
                         _ => {}
                     }
                 },
                 TerminalThreadMessage::Resize(_, _) => {
-                    let lines = lines_mtx.lock().expect("Could not take lock in resize event handler");
+                    let lines = sources[source_index].lines.lock().expect("Could not take lock in resize event handler");
                     overwrite_last_n_lines(&lines, pos, None);
                 }
                 TerminalThreadMessage::Read => {
-                    let lines = lines_mtx.lock().expect("Could not take lock in read event handler");
+                    let lines = sources[source_index].lines.lock().expect("Could not take lock in read event handler");
                     overwrite_last_n_lines(&lines, pos, None);
                 }
             }
         }
     }
 
+    execute!(stdout(), EnableLineWrap).unwrap();
     execute!(stdout(), LeaveAlternateScreen).unwrap();
     disable_raw_mode().expect("Could not exit raw mode");
 
-    let _ = reader_tx.send(ReaderThreadMessage::Exit); // If it's not received that's ok, that probably means the thread has already exited
-    let _ = input_tx.send(InputThreadMessage::Exit); // If it's not received that's ok, that probably means the thread has already exited
+    // This will bring all of our threads down with us
     exit(0);
 }
 
@@ -231,7 +243,7 @@ fn write_status_message(message: &str) {
     ).unwrap();
 }
 
-fn jump_to_match(lines: &Vec<String>, matches: &Vec<usize>, pos: &mut Option<usize>, page_up_size: usize, search: &str, match_regex: bool, match_no: usize) -> Result<(), ()> {
+fn jump_to_match(lines: &Vec<String>, matches: &Vec<usize>, pos: &mut Option<usize>, page_up_size: usize, match_no: usize) -> Result<(), ()> {
     let mut highlight_line_no = None;
 
     if match_no < matches.len() {
@@ -247,7 +259,7 @@ fn jump_to_match(lines: &Vec<String>, matches: &Vec<usize>, pos: &mut Option<usi
 }
 
 // Note, search mode ignores many of the events from term_rx. It has special permission to do so.
-fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<String>>>, term_rx: &mpsc::Receiver<TerminalThreadMessage>, page_up_size: usize, match_regex: bool) {
+fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Mutex<Vec<String>>, term_rx: &mpsc::Receiver<TerminalThreadMessage>, page_up_size: usize, match_regex: bool) {
     // Is it right to hold the lock for this whole time? Or would the user want to see new results as they come in?
     let lines= lines_mtx.lock().expect("Could not take lock in search event handler");
 
@@ -290,14 +302,14 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
             }
         }
         let matches = get_matches(&lines, search.trim(), match_regex);
-        let _ = jump_to_match(&lines, &matches, pos, page_up_size, search.trim(), match_regex, 0);
+        let _ = jump_to_match(&lines, &matches, pos, page_up_size, 0);
         write_status_message(&format!("{}: {}", prompt, search));
     }
 
     {
         let mut match_no = 0;
         let matches = get_matches(&lines, search.trim(), match_regex);
-        let _ = jump_to_match(&lines, &matches, pos, page_up_size, search.trim(), match_regex, match_no);
+        let _ = jump_to_match(&lines, &matches, pos, page_up_size, match_no);
 
         loop {
             match term_rx.recv() {
@@ -313,11 +325,11 @@ fn handle_search_mode(pos: &mut Option<usize>, lines_mtx: &Arc<Mutex<&mut Vec<St
                         }
                         crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Right | crossterm::event::KeyCode::Enter => {
                             match_no = (match_no + 1) % matches.len();
-                            let _ = jump_to_match(&lines, &matches, pos, page_up_size, search.trim(), match_regex, match_no);
+                            let _ = jump_to_match(&lines, &matches, pos, page_up_size, match_no);
                         }
                         crossterm::event::KeyCode::Char('p') | crossterm::event::KeyCode::Up |  crossterm::event::KeyCode::Left => {
                             match_no = if match_no > 0 { match_no - 1 } else { matches.len() - 1 };
-                            let _ = jump_to_match(&lines, &matches, pos, page_up_size, search.trim(), match_regex, match_no);
+                            let _ = jump_to_match(&lines, &matches, pos, page_up_size, match_no);
                         }
                         _ => {
                         }

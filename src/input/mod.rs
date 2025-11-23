@@ -1,17 +1,10 @@
 use std::sync::mpsc;
 use std::time::Duration;
 use crossterm::event::{poll, read, Event};
-use crate::messaging::{InputThreadMessage, TerminalThreadMessage};
+use crate::messaging::{TerminalThreadMessage};
 
-pub fn input_thread_fn(term_tx: mpsc::Sender<TerminalThreadMessage>, input_rx: mpsc::Receiver<InputThreadMessage>) {
+pub fn input_thread_fn(term_tx: mpsc::Sender<TerminalThreadMessage>) {
     loop {
-        if let Ok(message) = input_rx.try_recv() {
-            match message {
-                InputThreadMessage::Exit => {
-                    break;
-                }
-            }
-        }
         match poll(Duration::from_millis(100)).unwrap() {
             true => {
                 match read().unwrap() {

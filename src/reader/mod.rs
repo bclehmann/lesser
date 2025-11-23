@@ -1,23 +1,15 @@
 pub mod line_reader;
 
 use std::sync::{mpsc, Arc, Mutex};
-use crate::messaging::{ReaderThreadMessage, TerminalThreadMessage};
+use crate::messaging::{TerminalThreadMessage};
 use crate::reader::line_reader::LineReader;
+use crate::Source;
 
-pub fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Receiver<ReaderThreadMessage>, term_tx: mpsc::Sender<TerminalThreadMessage>, mut input_reader: Box<dyn LineReader>) {
+pub fn reader_thread_fn(source: Arc<Source>, term_tx: mpsc::Sender<TerminalThreadMessage>) {
     let mut line = String::new();
+    let mut reader = source.reader.lock().expect("Could not take lock in reader_thread");
 
-    while let Ok(n) = input_reader.read_line(&mut line) {
-        // Note that because read_line is blocking, try_recv might get called late
-        // This is fine, as we call exit in the terminal thread bringing everything down with us
-        if let Ok(message) = rx.try_recv() {
-            match message {
-                ReaderThreadMessage::Exit => {
-                    break;
-                }
-            }
-        }
-
+    while let Ok(n) = reader.read_line(&mut line) {
         // This isn't really for Windows, it's for Windows terminal emulators running under WSL
         // Since we're in raw mode the emulator won't know what to do with LF-style line endings
         // It's entirely possible that this will break things for normal Unix terminals, so this
@@ -37,7 +29,7 @@ pub fn reader_thread_fn(lines_mtx: Arc<Mutex<&mut Vec<String>>>, rx: mpsc::Recei
             break;
         }
         {
-            let mut lines: std::sync::MutexGuard<'_, &mut Vec<String>> = lines_mtx.lock().expect("Could not take lock in reader_thread");
+            let mut lines: std::sync::MutexGuard<'_, Vec<String>> = source.lines.lock().expect("Could not take lock in reader_thread");
             lines.push(line.clone());
         }
 
