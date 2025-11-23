@@ -18,6 +18,7 @@ pub fn term_thread_fn(sources: &[Arc<Source>], term_rx: mpsc::Receiver<TerminalT
 
     let mut pos_by_source = sources.iter().map(|_| Some(0)).collect::<Vec<Option<usize>>>();
     let mut source_index = 0;
+    let mut has_interacted = false;
 
     thread::sleep(Duration::from_millis(100)); // i.e. make sure there's some stuff to read on first draw
     {
@@ -105,6 +106,8 @@ pub fn term_thread_fn(sources: &[Arc<Source>], term_rx: mpsc::Receiver<TerminalT
                         }
                         _ => {}
                     }
+
+                    has_interacted = true;
                 },
                 TerminalThreadMessage::Resize(_, _) => {
                     let lines = sources[source_index].lines.lock().expect("Could not take lock in resize event handler");
@@ -113,6 +116,10 @@ pub fn term_thread_fn(sources: &[Arc<Source>], term_rx: mpsc::Receiver<TerminalT
                 TerminalThreadMessage::Read => {
                     let lines = sources[source_index].lines.lock().expect("Could not take lock in read event handler");
                     overwrite_last_n_lines(&lines, pos_by_source[source_index], None);
+
+                    if !has_interacted {
+                        write_status_message(format!("Viewing source: {}, {} sources loaded", sources[source_index].name, sources.len()).as_str());
+                    }
                 }
             }
         }
